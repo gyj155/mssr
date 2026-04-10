@@ -22,30 +22,49 @@ class VisualizationUtils:
                                    colors: Optional[np.ndarray] = None) -> Tuple[np.ndarray, Optional[np.ndarray]]:
         """
         Filter point cloud by removing the top 20% highest points to avoid ceiling occlusion.
+        
+        Args:
+            world_points: Point cloud in world coordinates, can be various shapes
+            ground_normal: Ground plane normal vector, shape (3,)
+            ground_centroid: Ground plane centroid, shape (3,)
+            height_percentile_cutoff: Remove points above this percentile (0.8 = remove top 20%)
+            colors: Optional colors corresponding to points (same shape as world_points but with 3 color channels)
+            
+        Returns:
+            Tuple of (filtered_points, filtered_colors). Colors is None if not provided.
         """
         original_shape = world_points.shape
         
+        # Reshape to (N, 3) format regardless of input dimensionality
         world_points_flat = world_points.reshape(-1, 3)
             
+        # Remove invalid points
         valid_mask = np.isfinite(world_points_flat).all(axis=1)
         valid_points = world_points_flat[valid_mask]
 
+        # Normalize ground normal
         ground_normal = np.array(ground_normal)
         ground_normal = ground_normal / np.linalg.norm(ground_normal)
         ground_centroid = np.array(ground_centroid)
         
+        # Calculate height of each point from ground plane
+        # Height = distance from point to ground plane along normal direction
         height_vectors = valid_points - ground_centroid
         heights = np.dot(height_vectors, ground_normal)
         
+        # Get height range
         min_height = np.min(heights)
         max_height = np.max(heights)
         height_range = max_height - min_height
         
+        # Calculate cutoff height (remove top 20%)
         cutoff_height = min_height + height_range * height_percentile_cutoff
         
+        # Filter points below cutoff
         height_mask = heights <= cutoff_height
         filtered_points = valid_points[height_mask]
         
+        # Filter colors if provided
         filtered_colors = None
         colors_flat = colors.reshape(-1, 3) if len(colors.shape) > 2 else colors
         colors_valid = colors_flat[valid_mask]
@@ -58,7 +77,7 @@ class VisualizationUtils:
         target_point: np.ndarray,
         ground_normal: np.ndarray,
         elevation_angle_deg: float = 45.0,
-        assume_world_to_camera: bool = True,
+        assume_world_to_camera: bool = True,  # Specify extrinsic direction
         verbose: bool = False
     ) -> np.ndarray:
         """
@@ -67,6 +86,7 @@ class VisualizationUtils:
         world→camera extrinsic matrix (4x4).
         """
 
+        # ---- Input and shape validation ----
         extrinsic = np.asarray(original_extrinsic, dtype=float)
         if extrinsic.shape == (3, 4):
             extrinsic = np.vstack([extrinsic, [0, 0, 0, 1]])
@@ -85,26 +105,28 @@ class VisualizationUtils:
         t_orig = extrinsic[:3, 3]
 
         if not assume_world_to_camera:
+            # If input is camera→world, invert to get world→camera
             # [R|t]_cw  =>  world_to_camera = [R^T | -R^T t]
             R_w2c = R_orig.T
             t_w2c = -R_orig.T @ t_orig
             R_orig, t_orig = R_w2c, t_w2c
 
-        # C = -R^T t
+        # Camera position in world coordinates: C = -R^T t
         camera_pos_world = -R_orig.T @ t_orig
 
+        # ---- Original view direction (unit vector) ----
         view_dir = target_point - camera_pos_world
         vd_norm = np.linalg.norm(view_dir)
         if vd_norm < 1e-12:
             raise ValueError("camera position equals target_point")
         view_dir = view_dir / vd_norm
 
-        # Pitch rotation axis: perpendicular to both view_dir and ground_normal (rotation within the plane they span)
+        # ---- Pitch rotation axis: perpendicular to both view_dir and ground_normal (rotation within the plane they span) ----
         rotation_axis = np.cross(ground_normal, view_dir)
         ax_norm = np.linalg.norm(rotation_axis)
         if ax_norm < 1e-8:
-            # View direction parallel to ground normal: choose any axis orthogonal to ground_normal
-            # we take a basis vector not parallel to ground_normal and orthogonalize it
+            # View direction parallel to ground normal: choose any axis orthogonal to ground_normal and as orthogonal to view_dir as possible
+            # Here we take a basis vector not parallel to ground_normal and orthogonalize it
             guess = np.array([1.0, 0.0, 0.0]) if abs(ground_normal[0]) < 0.9 else np.array([0.0, 1.0, 0.0])
             rotation_axis = np.cross(ground_normal, guess)
             ax_norm = np.linalg.norm(rotation_axis)
@@ -112,7 +134,7 @@ class VisualizationUtils:
                 raise ValueError("Failed to construct a valid rotation axis")
         rotation_axis /= ax_norm
 
-        # Rotate camera position around this axis, with target as center
+        # ---- Rotate camera position around this axis, with target as center ----
         angle = np.deg2rad(elevation_angle_deg)
         rot = R.from_rotvec(angle * rotation_axis)
 
@@ -120,15 +142,18 @@ class VisualizationUtils:
         new_relative_pos = rot.apply(relative_pos)
         new_camera_pos = target_point + new_relative_pos
 
+        # ---- New view direction (pointing to target) ----
         new_z = target_point - new_camera_pos
         new_z_norm = np.linalg.norm(new_z)
         if new_z_norm < 1e-12:
             raise ValueError("Degenerate new camera position")
         new_z = new_z / new_z_norm  # z-axis = forward (pointing to target)
 
+        # ---- Construct camera coordinate system: x right, z forward, y determined by right-hand rule (expect y downward) ----
         x = np.cross(new_z, ground_normal)
         x_norm = np.linalg.norm(x)
         if x_norm < 1e-8:
+            # new_z parallel to ground_normal: pick a vector not parallel to new_z to define x
             ref = np.array([1.0, 0.0, 0.0]) if abs(new_z[0]) < 0.9 else np.array([0.0, 1.0, 0.0])
             x = np.cross(ref, new_z)
             x_norm = np.linalg.norm(x)
@@ -139,6 +164,7 @@ class VisualizationUtils:
         y = np.cross(new_z, x)
         y /= np.linalg.norm(y)
 
+        # If we want y "downward" (opposite to ground_normal), perform alignment
         if np.dot(y, ground_normal) > 0:
             y = -y
             x = np.cross(y, new_z)
@@ -168,6 +194,8 @@ class VisualizationUtils:
 
         width, height = image_size
 
+        
+        # Calculate padding and new size if arrows will be overlaid
         padding_info = None
         if arrows_info is not None:
             (new_width, new_height), (pad_left, pad_top, pad_right, pad_bottom) = self._calculate_required_size_with_arrows(
@@ -176,35 +204,42 @@ class VisualizationUtils:
             width, height = new_width, new_height
             padding_info = (pad_left, pad_top, pad_right, pad_bottom)
 
+        # Handle different point cloud shapes - simple flatten
         world_points_flat = world_points.reshape(-1, 3)
 
         
         if len(world_points_flat) == 0:
             return np.full((height, width, 3), background_color, dtype=np.uint8)
         
-        extrinsic = np.array(extrinsic, dtype=np.float32)
+        # Ensure matrices are correct shape
+        extrinsic = np.array(extrinsic, dtype=np.float32)  # Use float32 for speed
         if extrinsic.shape == (3, 4):
             extrinsic = np.vstack([extrinsic, [0, 0, 0, 1]])
         intrinsic = np.array(intrinsic, dtype=np.float32)
         
+        # Transform world points to camera coordinates (vectorized)
         world_points_h = np.column_stack([world_points_flat, np.ones(len(world_points_flat), dtype=np.float32)])
-        camera_points_h = world_points_h @ extrinsic.T
+        camera_points_h = world_points_h @ extrinsic.T  # More efficient than transpose
         camera_points = camera_points_h[:, :3]
         
+        # Filter points behind camera (vectorized)
         front_mask = camera_points[:, 2] > 0
         if not np.any(front_mask):
             return np.full((height, width, 3), background_color, dtype=np.uint8)
             
         camera_points = camera_points[front_mask]
         
+        # Project to image coordinates (vectorized)
         projected = camera_points @ intrinsic.T
-        pixel_coords = projected[:, :2] / projected[:, [2, 2]]
+        pixel_coords = projected[:, :2] / projected[:, [2, 2]]  # Broadcasting division
         
+        # Apply padding offset if needed
         if padding_info is not None:
             pad_left, pad_top, pad_right, pad_bottom = padding_info
             pixel_coords[:, 0] += pad_left
             pixel_coords[:, 1] += pad_top
         
+        # Filter points within image bounds (vectorized) - now use the padded image size
         valid_mask = ((pixel_coords[:, 0] >= 0) & (pixel_coords[:, 0] < width) & 
                      (pixel_coords[:, 1] >= 0) & (pixel_coords[:, 1] < height))
         
@@ -215,7 +250,9 @@ class VisualizationUtils:
         depths = camera_points[valid_mask, 2]
         
         colors_flat = pre_extracted_colors.reshape(-1, 3)
-        colors = colors_flat[front_mask][valid_mask]  
+        colors = colors_flat[front_mask][valid_mask]  # Apply both masks
+        
+        # Optimized rendering with depth sorting only when necessary
         image = self._render_points(
             pixel_coords, colors, depths, (width, height), 
             background_color, point_size
@@ -231,7 +268,7 @@ class VisualizationUtils:
                 source_images_np.append(np.array(img))
         images_array = np.stack(source_images_np, axis=0)
         colors = images_array.reshape(-1, 3)
-        return colors.reshape(original_shape)
+        return colors.reshape(original_shape)  # Reshape back to original shape
     
     
     def _render_points(self, pixel_coords: np.ndarray, colors: np.ndarray, 
@@ -241,16 +278,18 @@ class VisualizationUtils:
         width, height = image_size
         image = np.full((height, width, 3), background_color, dtype=np.uint8)
         
+        # Convert to integer pixel coordinates
         pixel_coords_int = pixel_coords.astype(np.int32)
         
-        depth_order = np.argsort(depths)[::-1]
-        batch_size = min(1000, len(pixel_coords_int))
+        depth_order = np.argsort(depths)[::-1]  # Back to front
+        batch_size = min(1000, len(pixel_coords_int))  # Process in batches
         
         for i in range(0, len(depth_order), batch_size):
             batch_indices = depth_order[i:i + batch_size]
             batch_coords = pixel_coords_int[batch_indices]
             batch_colors = colors[batch_indices]
             
+            # Draw batch of circles
             for j, (u, v) in enumerate(batch_coords):
                 color = batch_colors[j]
                 cv2.circle(image, (u, v), point_size, 
@@ -275,7 +314,7 @@ class VisualizationUtils:
     
     def camera_3d_to_pixel(self, point_3d: np.ndarray, intrinsic: np.ndarray) -> Optional[np.ndarray]:
         """Project 3D camera coordinates to pixel coordinates"""
-        if point_3d[2] <= 0:
+        if point_3d[2] <= 0:  # Point behind camera
             return None
         fx, fy = intrinsic[0, 0], intrinsic[1, 1]
         cx, cy = intrinsic[0, 2], intrinsic[1, 2]
@@ -381,29 +420,47 @@ class VisualizationUtils:
                                     font_scale: float = 0.7, offset_2d: Tuple[int, int] = (0, 0)) -> np.ndarray:
         """
         Overlay directional arrows on rendered image.
+        
+        Args:
+            rendered_image: Base rendered image
+            object_position: Origin point in world coordinates
+            directions_world: Dictionary of direction vectors in world coordinates
+            extrinsic: Camera extrinsic matrix
+            intrinsic: Camera intrinsic matrix
+            arrow_length_3d: Length of arrows in 3D space
+            colors: Optional color mapping for arrows
+            font_scale: Font scale for labels
+            
+        Returns:
+            Image with overlaid arrows
         """
         img = rendered_image.copy()
         
+        # Default colors (BGR format for OpenCV)
         if colors is None:
             colors = {
                 '0': (0, 0, 255),      # Red
                 '1': (255, 0, 0),      # Blue  
                 '2': (0, 180, 200),    # Yellow
                 '3': (0, 180, 0),      # Green
-                '4': (150, 150, 0),    # Teal
+                '4': (150, 150, 0),    # Teal (for fine-grained)
             }
         
+        # Ensure extrinsic is 4x4
         extrinsic_matrix = np.array(extrinsic)
         if extrinsic_matrix.shape == (3, 4):
             extrinsic_matrix = np.vstack([extrinsic_matrix, [0, 0, 0, 1]])
         
+        # Convert world coordinates to camera coordinates
         world_origin = np.array(object_position, dtype=np.float64)
         origin_3d_camera = self.world_to_camera_coordinates(world_origin, extrinsic_matrix)
         
+        # Validate camera depth
         if origin_3d_camera[2] <= 0:
             print(f"Warning: Object is behind camera in rendered view (depth: {origin_3d_camera[2]:.3f})")
             return img
         
+        # Convert direction vectors from world to camera coordinates
         directions_camera = {}
         for direction_name, world_direction in directions_world.items():
             camera_direction = self.world_direction_to_camera(world_direction, extrinsic_matrix)
@@ -411,21 +468,25 @@ class VisualizationUtils:
         
         intrinsic_np = np.array(intrinsic)
         
+        # Draw arrows and labels
         for direction_name in sorted(directions_world.keys()):
             direction_3d_camera = directions_camera[direction_name]
-            color = colors.get(direction_name, (128, 128, 128))
+            color = colors.get(direction_name, (128, 128, 128))  # Default gray
             
+            # Draw arrow
             success = self.draw_arrow_3d_on_image(
                 img, origin_3d_camera, direction_3d_camera, arrow_length_3d, 
                 color, intrinsic_np, line_thickness=3, offset_2d=offset_2d
             )
             
             if success:
+                # Add text label
                 self.add_text_label_3d_on_image(
                     img, origin_3d_camera, direction_3d_camera, arrow_length_3d, 
                     direction_name, color, intrinsic_np, font_scale=font_scale, thickness=2, offset_2d=offset_2d
                 )
         
+        # Draw origin point
         origin_pixel = self.camera_3d_to_pixel(origin_3d_camera, intrinsic_np)
         if origin_pixel is not None:
             offset_arr = np.array(offset_2d)
@@ -437,10 +498,18 @@ class VisualizationUtils:
     def concatenate_images_horizontally(self, img1: np.ndarray, img2: np.ndarray) -> np.ndarray:
         """
         Concatenate two images horizontally, handling different heights.
+        
+        Args:
+            img1: First image (left)
+            img2: Second image (right)
+            
+        Returns:
+            Horizontally concatenated image
         """
         h1, w1 = img1.shape[:2]
         h2, w2 = img2.shape[:2]
         
+        # Make heights equal by padding with white
         max_height = max(h1, h2)
         
         if h1 < max_height:
@@ -453,6 +522,7 @@ class VisualizationUtils:
             pad_bottom = max_height - h2 - pad_top
             img2 = cv2.copyMakeBorder(img2, pad_top, pad_bottom, 0, 0, cv2.BORDER_CONSTANT, value=(255, 255, 255))
         
+        # Concatenate horizontally
         concatenated = np.hstack([img1, img2])
         return concatenated
     
@@ -461,37 +531,59 @@ class VisualizationUtils:
                                            arrows_info: Dict) -> Tuple[Tuple[int, int], Tuple[int, int, int, int]]:
         """
         Calculate required image size and padding to accommodate arrows and labels.
+        
+        Args:
+            original_size: Original (width, height) tuple
+            extrinsic: Camera extrinsic matrix
+            intrinsic: Camera intrinsic matrix
+            arrows_info: Dictionary containing:
+                - 'origin': 3D origin point in world coordinates
+                - 'directions': Dict of direction vectors in world coordinates
+                - 'arrow_length': Length of arrows in 3D space
+                - 'font_scale': Font scale for labels (default 0.7)
+                
+        Returns:
+            Tuple of ((new_width, new_height), (pad_left, pad_top, pad_right, pad_bottom))
         """
         width, height = original_size
         
+        # Extract arrow information
         origin_world = np.array(arrows_info['origin'])
         directions_world = arrows_info['directions']
         arrow_length_3d = arrows_info.get('arrow_length', 0.4)
         font_scale = arrows_info.get('font_scale', 0.7)
         
+        # Ensure extrinsic is 4x4
         extrinsic_matrix = np.array(extrinsic)
         if extrinsic_matrix.shape == (3, 4):
             extrinsic_matrix = np.vstack([extrinsic_matrix, [0, 0, 0, 1]])
         
+        # Convert origin to camera coordinates
         origin_3d_camera = self.world_to_camera_coordinates(origin_world, extrinsic_matrix)
         
+        # Skip calculation if origin is behind camera
         if origin_3d_camera[2] <= 0:
             return original_size
         
+        # Collect all 2D points that need to be visible
         all_points_2d = []
         
+        # Add origin point
         origin_pixel = self.camera_3d_to_pixel(origin_3d_camera, intrinsic)
         if origin_pixel is not None:
             all_points_2d.append(origin_pixel)
         
+        # Process each arrow
         arrow_tip_ratio = 0.15
         font = cv2.FONT_HERSHEY_SIMPLEX
         thickness = 2
         background_padding = 2
         
         for direction_name, world_direction in directions_world.items():
+            # Convert direction to camera coordinates
             camera_direction = self.world_direction_to_camera(world_direction, extrinsic_matrix)
             
+            # Calculate endpoint
             endpoint_3d_camera = origin_3d_camera + camera_direction * arrow_length_3d
             endpoint_pixel = self.camera_3d_to_pixel(endpoint_3d_camera, intrinsic)
             
@@ -500,6 +592,7 @@ class VisualizationUtils:
             
             all_points_2d.append(endpoint_pixel)
             
+            # Calculate arrow tip points
             direction_2d = endpoint_pixel - origin_pixel
             length_2d = np.linalg.norm(direction_2d)
             
@@ -512,9 +605,11 @@ class VisualizationUtils:
                 tip_point2 = endpoint_pixel - tip_length * unit_direction_2d - tip_length * 0.5 * perpendicular
                 all_points_2d.extend([tip_point1, tip_point2])
                 
+                # Calculate label position and bounding box
                 label_offset = 25
                 label_pixel = endpoint_pixel + unit_direction_2d * label_offset
                 
+                # Get text size for label bounding box
                 (text_width, text_height), baseline = cv2.getTextSize(
                     str(direction_name), font, font_scale, thickness
                 )
@@ -522,27 +617,37 @@ class VisualizationUtils:
                 text_x = label_pixel[0] - text_width // 2
                 text_y = label_pixel[1] + text_height // 2
                 
+                # Add label bounding box corners
                 label_top_left = np.array([text_x - background_padding, 
                                          text_y - text_height - background_padding])
                 label_bottom_right = np.array([text_x + text_width + background_padding, 
                                              text_y + baseline + background_padding])
                 all_points_2d.extend([label_top_left, label_bottom_right])
                 
+                #print(direction_name, label_top_left, label_bottom_right, tip_point1, tip_point2, endpoint_pixel, origin_pixel)
+        
+        # Calculate required padding using the same logic as in predefined_modules.py
         pad_left, pad_top, pad_right, pad_bottom = 0, 0, 0, 0
         
         if all_points_2d:
             points_arr = np.array(all_points_2d)
             min_x, min_y = np.min(points_arr, axis=0)
             max_x, max_y = np.max(points_arr, axis=0)
-        
+            
+            # Calculate padding needed in each direction
             pad_left = int(max(0, -min_x))
             pad_top = int(max(0, -min_y))
             pad_right = int(max(0, max_x - width))
             pad_bottom = int(max(0, max_y - height))
             
+            # Calculate new dimensions
             new_width = width + pad_left + pad_right
             new_height = height + pad_top + pad_bottom
-
+            
+            # print(f"Calculated padding: L={pad_left}, T={pad_top}, R={pad_right}, B={pad_bottom}")
+            # print(f"Point bounds: min_x={min_x:.1f}, max_x={max_x:.1f}, min_y={min_y:.1f}, max_y={max_y:.1f}")
+            # print(f"Original size: {width}x{height}, New size: {new_width}x{new_height}")
+            
             return (new_width, new_height), (pad_left, pad_top, pad_right, pad_bottom)
         
         return original_size, (0, 0, 0, 0)
@@ -551,6 +656,13 @@ class VisualizationUtils:
 def html_embed_image_from_array(image_array: np.ndarray, size: int = None) -> str:
     """
     Convert numpy image array to HTML embedded image string.
+    
+    Args:
+        image_array: Image as numpy array (H, W, 3) in RGB format
+        size: Optional max size for display
+        
+    Returns:
+        HTML string for embedding
     """
     pil_image = Image.fromarray(image_array)
     buffered = io.BytesIO()

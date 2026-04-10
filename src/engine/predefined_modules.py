@@ -9,7 +9,9 @@ import cv2
 from PIL import Image
 from scipy.spatial.transform import Rotation as R
 import sys
-#sys.path.append('')
+_project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+if _project_root not in sys.path:
+    sys.path.insert(0, _project_root)
 import groundingdino.datasets.transforms as T
 from src.prompts.vqa_prompt import (
     FIND_OBJ_PROMPT_MMSI,
@@ -30,7 +32,7 @@ class PredefinedModule:
 
     def write_trace(self, html):
         if self.trace_path:
-            with open(self.trace_path, "a+") as f:
+            with open(self.trace_path, "a+", encoding="utf-8") as f:
                 f.write(f"{html}\n")
 
 class LocateModule(PredefinedModule):
@@ -118,12 +120,11 @@ class FindObjModule(PredefinedModule):
     def __init__(
         self,
         trace_path=None,
-        api_key_path="./api.key",
         modules_list=None,
-        vqa_model="gemini-2.5-flash",
+        vqa_model="gemini-3.1-flash-lite-preview",
     ):
         super().__init__("find_obj", trace_path)
-        self.generator = Generator(vqa_model, api_key_path=api_key_path, temperature=1.0, thinking_budget=0)
+        self.generator = Generator(vqa_model, temperature=1.0)
 
     def find(self, images, object_prompts):   
         image_ids_str = ", ".join(map(str, range(len(images))))
@@ -183,14 +184,18 @@ class RelativeCamMovementModule(PredefinedModule):
             raise ValueError(
                 f"Extrinsic matrices must be 4x4 or 3x4. Got {E0.shape} and {E1.shape}"
             )
-        # cam0 in the world is T_w_c0 = inv(E0).
-        # cam1 in the world is T_w_c1 = inv(E1).
-        # cam1 relative to cam0 is T_c0_c1 = T_c0_w @ T_w_c1 = E0 @ np.linalg.inv(E1).
+
+        # The transformation from world to cam0 is E0. The transformation from world to cam1 is E1.
+        # The pose of cam0 in the world is T_w_c0 = inv(E0).
+        # The pose of cam1 in the world is T_w_c1 = inv(E1).
+        # The pose of cam1 relative to cam0 is T_c0_c1 = T_c0_w @ T_w_c1 = E0 @ np.linalg.inv(E1).
         T_c0_c1 = E0 @ np.linalg.inv(E1)
         rotation_matrix = T_c0_c1[:3, :3]
         translation_vector = T_c0_c1[:3, 3]
 
+        # Decompose rotation matrix into Euler angles (yaw, pitch, roll) in degrees
         # Using 'yxz' order: yaw (around y), pitch (around x), roll (around z)
+        # This order is often intuitive for camera orientation.
         angles = R.from_matrix(rotation_matrix).as_euler("yxz", degrees=True)
         yaw, pitch, roll = angles[0], angles[1], angles[2]
         # +X right, +Y down
@@ -251,12 +256,12 @@ class RelativeObjectPositionModule(PredefinedModule):
 
         P_world_h = np.append(P_world, 1)
         P_cam_h = E_w2c @ P_world_h
-        # +X right, +Y down, +Z forward
+        # Standard computer vision coordinate system: +X right, +Y down, +Z forward
         tx, ty, tz = P_cam_h[0], P_cam_h[1], P_cam_h[2]
         
         forward = tz
         right = tx
-        up = -ty
+        up = -ty  # +Y is down in standard CV coordinates
 
         result = {
             "forward": float(forward),
@@ -279,21 +284,24 @@ class GetGeoInfoModule(PredefinedModule):
         """
         self.write_trace("<p>Getting geometric info...</p>")
         
+        # Images are already preprocessed, just convert to tensor
         from torchvision.transforms import ToTensor
         to_tensor = ToTensor()
         image_tensors = []
         
         for img in images:
+            # Ensure RGB
             if img.mode != "RGB":
                 img = img.convert("RGB")
             img_tensor = to_tensor(img)
             image_tensors.append(img_tensor)
         
+        # Stack tensors
         processed_images = torch.stack(image_tensors).to(self.device)
         
         dtype = torch.bfloat16 if torch.cuda.get_device_capability()[0] >= 8 else torch.float16
         with torch.no_grad():
-            with torch.cuda.amp.autocast(dtype=dtype):
+            with torch.amp.autocast("cuda", dtype=dtype):
                 predictions = self.vggt_model(processed_images)
 
         extrinsics, intrinsics = pose_encoding_to_extri_intri(
@@ -322,18 +330,19 @@ class CalibrateDirectionsModule(PredefinedModule):
         """
         self.write_trace("<p>Calibrating directions...</p>")
 
-        # use provided ground normal or find ground plane using PCA
+        # 1. Use provided ground normal or find ground plane using PCA
         if ground_normal is not None:
             self.write_trace("<p>Using pre-computed ground plane normal</p>")
             ground_normal = np.array(ground_normal)
+            # Calculate centroid for consistency
             points = np.array(world_points)
-            if len(points.shape) == 3:
+            if len(points.shape) == 3:  # If points is from multiple images
                 points = points.reshape(-1, 3)
             centroid = points.mean(axis=0)
         else:
             self.write_trace("<p>Computing ground plane using PCA...</p>")
             points = np.array(world_points)
-            if len(points.shape) == 3:
+            if len(points.shape) == 3:  # If points is from multiple images
                 points = points.reshape(-1, 3)
             
             centroid = points.mean(axis=0)
@@ -342,12 +351,14 @@ class CalibrateDirectionsModule(PredefinedModule):
             eigenvalues, eigenvectors = np.linalg.eigh(cov_matrix)
             ground_normal = eigenvectors[:, np.argmin(eigenvalues)]
             if ground_normal[1] > 0:
-            # Notice according to vggt setting, the world coordinate is the same as the first camera's extrinsic coordinate.(+Z forward, -Y upward). 
-            # As we want normal vector points 'upward' in real world. The Y should be negative. 
+            #Notice according to vggt setting, the world coordinate is the same as the first camera's extrinsic coordinate.(+Z forward, -Y upward). 
+            #As we want normal vector points 'upward' in real world. The Y should be negative. 
                 ground_normal *= -1
         
         self.write_trace(f"<p>Ground plane normal: [{ground_normal[0]:.3f}, {ground_normal[1]:.3f}, {ground_normal[2]:.3f}]</p>")
         
+        # 2. Handle scene center case and project target and center points onto ground plane
+        # If target or center is None, use the scene centroid (average of all points)
         if target_3d_point is None:
             target_point = centroid.copy()
             self.write_trace("<p>Using scene center for target point</p>")
@@ -360,24 +371,30 @@ class CalibrateDirectionsModule(PredefinedModule):
         else:
             center_point = np.array(center_3d_point)
         
-
+        # Project points to ground plane
         target_proj = target_point - np.dot(target_point - centroid, ground_normal) * ground_normal
         center_proj = center_point - np.dot(center_point - centroid, ground_normal) * ground_normal
+        
+        # 3. Calculate known direction vector
         known_vec = target_proj - center_proj
-
+        
+        # Check if target and center are the same (both None or very close)
         assert np.linalg.norm(known_vec) > 1e-6, "Target and center are at the same location. Cannot calibrate directions."
             
         known_vec_2d = known_vec - np.dot(known_vec, ground_normal) * ground_normal  # Ensure it's on plane
-        known_vec_2d = known_vec_2d / np.linalg.norm(known_vec_2d)
+        known_vec_2d = known_vec_2d / np.linalg.norm(known_vec_2d)  # Normalize
         
+        # 4. Calculate all cardinal directions based on known direction
         # Create rotation matrix for 90 degrees around ground normal
         def rotate_vector_on_plane(vec, normal, angle_deg):
             angle_rad = np.radians(angle_deg)
+            # Rodrigues' rotation formula
             cos_angle = np.cos(angle_rad)
             sin_angle = np.sin(angle_rad)
             return cos_angle * vec + sin_angle * np.cross(normal, vec) + \
                     (1 - cos_angle) * np.dot(vec, normal) * normal
-
+        
+        # Determine directions based on known direction
         known_dir_lower = known_direction.lower()
         
         if known_dir_lower == "west":
@@ -401,24 +418,28 @@ class CalibrateDirectionsModule(PredefinedModule):
             north = -south
             west = -east
         elif known_dir_lower == "northeast":
+            # Northeast is 45 degrees between north and east
             northeast = known_vec_2d
             north = rotate_vector_on_plane(northeast, ground_normal, 45)
             east = rotate_vector_on_plane(northeast, ground_normal, -45)
             south = -north
             west = -east
         elif known_dir_lower == "northwest":
+            # Northwest is 45 degrees between north and west
             northwest = known_vec_2d
             north = rotate_vector_on_plane(northwest, ground_normal, -45)
             west = rotate_vector_on_plane(northwest, ground_normal, 45)
             south = -north
             east = -west
         elif known_dir_lower == "southeast":
+            # Southeast is 45 degrees between south and east
             southeast = known_vec_2d
             south = rotate_vector_on_plane(southeast, ground_normal, -45)
             east = rotate_vector_on_plane(southeast, ground_normal, 45)
             north = -south
             west = -east
         elif known_dir_lower == "southwest":
+            # Southwest is 45 degrees between south and west
             southwest = known_vec_2d
             south = rotate_vector_on_plane(southwest, ground_normal, 45)
             west = rotate_vector_on_plane(southwest, ground_normal, -45)
@@ -427,6 +448,7 @@ class CalibrateDirectionsModule(PredefinedModule):
         else:
             raise ValueError(f"Unknown direction: {known_direction}. Supported directions: north, south, east, west, northeast, northwest, southeast, southwest")
         
+        # 5. Create visualization
         self._visualize_calibration(center_proj, target_proj, north, south, east, west, 
                                     ground_normal, known_direction, centroid)
         
@@ -476,9 +498,11 @@ class CalibrateDirectionsModule(PredefinedModule):
         
         # Project points to 2D for visualization (remove component along normal)
         def project_to_2d(point):
-            if abs(normal[2]) > 0.9:
+            # Use the two largest components for visualization
+            if abs(normal[2]) > 0.9:  # If normal is mostly vertical, use X-Y plane
                 return point[0], point[1]
-            else:
+            else:  # Otherwise project properly
+                # Create basis vectors on the plane
                 v1 = np.array([1, 0, 0]) if abs(normal[0]) < 0.9 else np.array([0, 1, 0])
                 v1 = v1 - np.dot(v1, normal) * normal
                 v1 = v1 / np.linalg.norm(v1)
@@ -488,12 +512,15 @@ class CalibrateDirectionsModule(PredefinedModule):
         center_2d = project_to_2d(center)
         target_2d = project_to_2d(target)
         
+        # Plot center and target
         ax.scatter(*center_2d, color='blue', s=200, marker='o', label='Center', zorder=5)
         ax.scatter(*target_2d, color='red', s=200, marker='*', label=f'Target ({known_dir})', zorder=5)
         
+        # Draw arrow from center to target
         ax.annotate('', xy=target_2d, xytext=center_2d,
                    arrowprops=dict(arrowstyle='->', color='purple', lw=2))
         
+        # Draw cardinal directions
         scale = np.linalg.norm(np.array(target_2d) - np.array(center_2d)) * 0.8
         directions = {
             'N': north * scale,
@@ -511,16 +538,19 @@ class CalibrateDirectionsModule(PredefinedModule):
             ax.text(end_2d[0], end_2d[1], label, fontsize=14, fontweight='bold',
                    ha='center', va='center', color=colors[label])
         
+        # Set equal aspect ratio and labels
         ax.set_aspect('equal')
         ax.grid(True, alpha=0.3)
         ax.set_title('Direction Calibration (Bird\'s Eye View)', fontsize=16)
         ax.legend()
         
+        # Save to bytes for HTML embedding
         buf = io.BytesIO()
         plt.savefig(buf, format='png', dpi=150, bbox_inches='tight')
         buf.seek(0)
         plt.close()
         
+        # Embed in HTML
         img_base64 = base64.b64encode(buf.getvalue()).decode('ascii')
         self.write_trace(f'<img src="data:image/png;base64,{img_base64}" style="max-width: 600px;">')
 
@@ -534,11 +564,13 @@ class CalculateDirectionModule(PredefinedModule):
         """
         self.write_trace("<p>Calculating relative direction...</p>")
 
+        # Extract calibration data
         north = np.array(calibration_info["north"])
         south = np.array(calibration_info["south"])
         east = np.array(calibration_info["east"])
         west = np.array(calibration_info["west"])
         
+        # Use provided ground normal or get from calibration info
         if ground_normal is not None:
             self.write_trace("<p>Using pre-computed ground plane normal</p>")
             ground_normal = np.array(ground_normal)
@@ -547,6 +579,8 @@ class CalculateDirectionModule(PredefinedModule):
             
         ground_centroid = np.array(calibration_info["ground_centroid"])
         
+        # Handle scene center case and project points to ground plane
+        # If target or center is None, use the scene centroid (from calibration)
         if target_3d_point is None:
             target_point = ground_centroid.copy()
             self.write_trace("<p>Using scene center for target point</p>")
@@ -572,6 +606,7 @@ class CalculateDirectionModule(PredefinedModule):
         
         direction_vec_2d = direction_vec_2d / np.linalg.norm(direction_vec_2d)
         
+        # Calculate angles with cardinal directions
         angles = {
             "north": np.arccos(np.clip(np.dot(direction_vec_2d, north), -1, 1)),
             "south": np.arccos(np.clip(np.dot(direction_vec_2d, south), -1, 1)),
@@ -585,7 +620,7 @@ class CalculateDirectionModule(PredefinedModule):
         primary_angle = angles_deg[primary_dir]
         
         # Determine if it's a compound direction (e.g., northeast)
-        threshold = 22.5
+        threshold = 22.5  # Half of 45 degrees
         if primary_angle < threshold:
             direction = primary_dir
         else:
@@ -600,7 +635,8 @@ class CalculateDirectionModule(PredefinedModule):
                 direction = "southwest"
             else:
                 direction = primary_dir
-
+        
+        # Create visualization
         self._visualize_direction(center_proj, target_proj, north, south, east, west, 
                                 ground_normal, direction, ground_centroid)
         
@@ -665,25 +701,29 @@ class CalculateDirectionModule(PredefinedModule):
                                  color=direction_colors.get(direction, 'purple'), 
                                  lw=3))
         
-
+        # Plot points
         ax.scatter(*center_2d, color='blue', s=300, marker='o', label='Center', zorder=5)
         ax.scatter(*target_2d, color='red', s=300, marker='*', label='Target', zorder=5)
-
+        
+        # Add direction label
         mid_x = (center_2d[0] + target_2d[0]) / 2
         mid_y = (center_2d[1] + target_2d[1]) / 2
         ax.text(mid_x, mid_y, direction.upper(), fontsize=14, fontweight='bold',
                bbox=dict(boxstyle="round,pad=0.3", facecolor='yellow', alpha=0.7))
-
+        
+        # Set equal aspect ratio and labels
         ax.set_aspect('equal')
         ax.grid(True, alpha=0.3)
         ax.set_title(f'Target is to the {direction.upper()} of Center', fontsize=16)
         ax.legend()
-
+        
+        # Save to bytes for HTML embedding
         buf = io.BytesIO()
         plt.savefig(buf, format='png', dpi=150, bbox_inches='tight')
         buf.seek(0)
         plt.close()
-
+        
+        # Embed in HTML
         img_base64 = base64.b64encode(buf.getvalue()).decode('ascii')
         self.write_trace(f'<img src="data:image/png;base64,{img_base64}" style="max-width: 600px;">')
 
@@ -711,7 +751,7 @@ class GetObject3DPositionModule(PredefinedModule):
         """
         self.write_trace(f"<p>Getting 3D position of '{object_description}' in image {image_id} using segmentation</p>")
         
-        # Locate the object in the specified image
+        # 1. Locate the object in the specified image
         bbox = self.modules_list.modules_dict["loc"].locate_bboxs(image, object_description)
         
         if not bbox or len(bbox) != 4:
@@ -719,20 +759,25 @@ class GetObject3DPositionModule(PredefinedModule):
             return None
         
         self.write_trace(f"<p>Located '{object_description}' at bbox: {bbox}</p>")
-        # segment the object mask
+        
+        # 2. Use SAM2 to segment the object mask
         object_mask = self._segment_object_mask(image, bbox, object_description)
+        
         if object_mask is None:
             self.write_trace(f"<p>Error: Could not segment '{object_description}' mask</p>")
             return None
         
-        # Extract 3D points using the mask
+        # 3. Extract 3D points using the mask
         object_3d_position, _ = self._extract_3d_position_from_mask(
             object_mask, extrinsics, intrinsics, depth_map, image_id, object_description
         )
+        
         if object_3d_position is None:
             self.write_trace(f"<p>Error: Could not determine 3D position from mask</p>")
             return None
+        
         self.write_trace(f"<p>Success: Object 3D position from segmentation: [{object_3d_position[0]:.3f}, {object_3d_position[1]:.3f}, {object_3d_position[2]:.3f}]</p>")
+        
         return object_3d_position
     
     def _segment_object_mask(self, image, bbox, object_description):
@@ -747,27 +792,32 @@ class GetObject3DPositionModule(PredefinedModule):
         Returns:
             numpy array: Binary mask of the object, or None if segmentation fails
         """
+        # Convert PIL image to numpy array
         image_np = np.array(image)
         H, W, _ = image_np.shape
         
+        # Set image for SAM2
         self.sam2_predictor.set_image(image_np)
         
+        # Convert bbox to format expected by SAM2
         x1, y1, x2, y2 = bbox
         box_xyxy_np = np.array([x1, y1, x2, y2])
         
         self.write_trace(f"<p>Using SAM2 to segment '{object_description}' with bbox: [{x1}, {y1}, {x2}, {y2}]</p>")
         
+        # Predict mask using SAM2
         masks, scores, logits = self.sam2_predictor.predict(
             point_coords=None,
             point_labels=None,
             box=box_xyxy_np,
-            multimask_output=False,
+            multimask_output=False,  # Use single best mask
         )
         
         # Get the best mask and ensure it's boolean type
-        object_mask = masks[0]
+        object_mask = masks[0]  # Shape: (H, W)
         mask_score = scores[0]
         
+        # Convert mask to boolean if it's not already
         if object_mask.dtype != bool:
             object_mask = object_mask.astype(bool)
             self.write_trace(f"<p>Converted mask from {masks[0].dtype} to boolean</p>")
@@ -775,6 +825,7 @@ class GetObject3DPositionModule(PredefinedModule):
         self.write_trace(f"<p>Segmentation completed with score: {mask_score:.3f}</p>")
         self.write_trace(f"<p>Mask covers {np.sum(object_mask)} pixels out of {object_mask.size} total</p>")
         
+        # Create visualization
         masked_image = self._create_masked_visualization(image_np, object_mask, bbox, object_description, mask_score)
         if masked_image is not None:
             from PIL import Image as PILImage
@@ -799,6 +850,7 @@ class GetObject3DPositionModule(PredefinedModule):
             np.array: 3D coordinates [x, y, z] or None if extraction fails
         """
     
+        # Get current image's depth map
         current_depth_map = np.array(depth_map[image_id])
         if len(current_depth_map.shape) == 3 and current_depth_map.shape[-1] == 1:
             current_depth_map = current_depth_map.squeeze(-1)
@@ -806,15 +858,18 @@ class GetObject3DPositionModule(PredefinedModule):
         depth_height, depth_width = current_depth_map.shape
         mask_height, mask_width = object_mask.shape
         
+        # Ensure mask is boolean type
         if object_mask.dtype != bool:
             object_mask = object_mask.astype(bool)
         
+        # Resize mask to match depth map if necessary
         if (mask_height, mask_width) != (depth_height, depth_width):
             from PIL import Image as PILImage
             mask_img = PILImage.fromarray(object_mask.astype(np.uint8) * 255)
             mask_img_resized = mask_img.resize((depth_width, depth_height), resample=PILImage.Resampling.NEAREST)
             object_mask = np.array(mask_img_resized) > 0
 
+        # Get world coordinates for the entire depth map
         from vggt.utils.geometry import depth_to_world_coords_points
         extrinsic = np.array(extrinsics[image_id])
         intrinsic = np.array(intrinsics[image_id])
@@ -832,6 +887,7 @@ class GetObject3DPositionModule(PredefinedModule):
             self.write_trace(f"<p>No valid 3D points found in mask for '{object_description}'</p>")
             return None, None
         
+        # Calculate robust position using median to handle outliers
         if len(valid_points) >= 3:
             object_3d_position = np.median(valid_points, axis=0)
             self.write_trace(f"<p>Used median of {len(valid_points)} points</p>")
@@ -848,19 +904,19 @@ class GetObject3DPositionModule(PredefinedModule):
         """
         self.write_trace(f"<p>Getting 3D point cloud of '{object_description}' in image {image_id} using segmentation</p>")
         
-        # Locate the object
+        # 1. Locate the object
         bbox = self.modules_list.modules_dict["loc"].locate_bboxs(image, object_description)
         if not bbox or len(bbox) != 4:
             self.write_trace(f"<p>Error: Could not locate '{object_description}' in image {image_id}</p>")
             return None
 
-        # Segment the object mask
+        # 2. Segment the object mask
         object_mask = self._segment_object_mask(image, bbox, object_description)
         if object_mask is None:
             self.write_trace(f"<p>Error: Could not segment '{object_description}' mask</p>")
             return None
 
-        # Extract 3D points using the mask
+        # 3. Extract 3D points using the mask
         _, point_cloud = self._extract_3d_position_from_mask(
             object_mask, extrinsics, intrinsics, depth_map, image_id, object_description
         )
@@ -875,26 +931,32 @@ class GetObject3DPositionModule(PredefinedModule):
         """Create visualization showing the segmented object."""
         from PIL import Image as PILImage, ImageDraw, ImageFont
         
+        # Ensure mask is boolean type
         if mask.dtype != bool:
             mask = mask.astype(bool)
         
+        # Create overlay image
         pil_image = PILImage.fromarray(image)
         overlay = PILImage.new('RGBA', pil_image.size, (0, 0, 0, 0))
         
+        # Convert mask to RGBA
         mask_rgba = np.zeros((mask.shape[0], mask.shape[1], 4), dtype=np.uint8)
         mask_rgba[mask] = [255, 0, 0, 255]  # Red mask with transparency
         mask_image_pil = PILImage.fromarray(mask_rgba, mode='RGBA')
         
         overlay.paste(mask_image_pil, (0, 0), mask_image_pil)
         
+        # Draw bounding box
         draw = ImageDraw.Draw(overlay)
         x1, y1, x2, y2 = [int(x) for x in bbox]
         draw.rectangle([x1, y1, x2, y2], outline=(0, 255, 0, 255), width=2)
         
+        # Add text label
         font = ImageFont.load_default()
         text = f"{object_description} ({score:.2f})"
         draw.text((x1, y1-20), text, fill=(0, 255, 0, 255), font=font)
         
+        # Composite images
         pil_image = pil_image.convert('RGBA')
         composite = PILImage.alpha_composite(pil_image, overlay)
         
@@ -913,6 +975,7 @@ class SituatedOrientationGroundingModule(PredefinedModule):
         print(f"Situated Orientation Grounding: {orientation_description}")
         self.write_trace(f"<h2>Situated Orientation Grounding: {orientation_description}</h2>")
 
+        # Use unified approach to identify object and select best image
         key_object, image_id, reasoning = self._identify_object_and_best_image(images, orientation_description)
         
         if not key_object or image_id is None:
@@ -959,23 +1022,14 @@ class SituatedOrientationGroundingModule(PredefinedModule):
         )
         
         self._current_ground_normal = np.array(ground_normal)
-        selected_arrow_id = self._select_closest_arrow(original_overlay_image, 
-                                                       elevated_overlay_image, 
-                                                       orientation_description, 
-                                                       key_object)
+        selected_arrow_id = self._select_closest_arrow(original_overlay_image, elevated_overlay_image, orientation_description, key_object)
         axis_directions_3d_world = self._create_ground_plane_directions(ground_normal, extrinsics[image_id])
-        fine_directions_world = self._create_fine_grained_directions_around_selected(selected_arrow_id, 
-                                                                                     axis_directions_3d_world, 
-                                                                                     ground_normal, 
-                                                                                     extrinsics[image_id])
+        fine_directions_world = self._create_fine_grained_directions_around_selected(selected_arrow_id, axis_directions_3d_world, ground_normal, extrinsics[image_id])
         original_fine_overlay_image, elevated_fine_overlay_image = self._create_fine_grained_overlay(
             source_image, object_3d_position, extrinsics[image_id], intrinsics[image_id],
             fine_directions_world, selected_arrow_id, filtered_world_points, filtered_colors
         )
-        final_arrow_id = self._select_final_direction_arrow(original_fine_overlay_image, 
-                                                            elevated_fine_overlay_image, 
-                                                            orientation_description, 
-                                                            key_object)
+        final_arrow_id = self._select_final_direction_arrow(original_fine_overlay_image, elevated_fine_overlay_image, orientation_description, key_object)
 
         if final_arrow_id >= len(fine_directions_world):
             self.write_trace(f"<p>Error: Invalid fine-grained arrow selection: {final_arrow_id}</p>")
@@ -1050,6 +1104,7 @@ class SituatedOrientationGroundingModule(PredefinedModule):
             best_image_id = int(answer_dict.get("best_image_id", 0))
             reasoning = answer_dict.get("reasoning", "")
             
+            # Validate the selection
             if best_image_id < 0 or best_image_id >= len(images):
                 self.write_trace(f"<p>Warning: Invalid image ID {best_image_id}, using image 0</p>")
                 best_image_id = 0
@@ -1139,7 +1194,7 @@ class SituatedOrientationGroundingModule(PredefinedModule):
 
         if origin_3d_camera[2] <= 0:
             self.write_trace(f"<p>Error: Object is behind camera (depth: {origin_3d_camera[2]:.3f})</p>")
-            return None, []
+            return None, None, {}
 
         axis_directions_3d_world = self._create_ground_plane_directions(ground_normal, extrinsic_matrix)
 
@@ -1231,8 +1286,8 @@ class SituatedOrientationGroundingModule(PredefinedModule):
         colors_bgr = {
             '0': (0, 0, 255),      # Red
             '1': (255, 0, 0),      # Blue  
-            '2': (0, 180, 200),    # Yellow
-            '3': (0, 180, 0),      # Green
+            '2': (0, 180, 200),    # Yellow (reduced saturation)
+            '3': (0, 180, 0),      # Green (reduced saturation)
         }
 
         self._current_colors_bgr = colors_bgr
@@ -1243,24 +1298,9 @@ class SituatedOrientationGroundingModule(PredefinedModule):
             direction_3d_world = axis_directions_3d_world[axis_name]
             color = colors_bgr[axis_name]
 
-            success = self.visualization_utils.draw_arrow_3d_on_image(bgr_image, 
-                                                                      origin_3d_camera, 
-                                                                      direction_3d_camera, 
-                                                                      arrow_length_3d, 
-                                                                      color, 
-                                                                      intrinsic_np, 
-                                                                      offset_2d=offset_2d)
+            success = self.visualization_utils.draw_arrow_3d_on_image(bgr_image, origin_3d_camera, direction_3d_camera, arrow_length_3d, color, intrinsic_np, offset_2d=offset_2d)
 
-            self.visualization_utils.add_text_label_3d_on_image(bgr_image, 
-                                                                origin_3d_camera, 
-                                                                direction_3d_camera, 
-                                                                arrow_length_3d, 
-                                                                axis_name, color, 
-                                                                intrinsic_np, 
-                                                                offset_2d=offset_2d, 
-                                                                font_scale=font_scale, 
-                                                                thickness=thickness, 
-                                                                background_padding=background_padding)
+            self.visualization_utils.add_text_label_3d_on_image(bgr_image, origin_3d_camera, direction_3d_camera, arrow_length_3d, axis_name, color, intrinsic_np, offset_2d=offset_2d, font_scale=font_scale, thickness=thickness, background_padding=background_padding)
             self.write_trace(f"<p>Drew arrow {axis_name}</p>")
 
             arrow_directions_world.append(direction_3d_world.tolist())
@@ -1464,7 +1504,7 @@ class SituatedOrientationGroundingModule(PredefinedModule):
         depth = origin_3d_camera[2]
         fx, fy = intrinsic[0, 0], intrinsic[1, 1]
         focal_length = (fx + fy) / 2.0
-        pixel_arrow_length = 60
+        pixel_arrow_length = 60  # Slightly smaller for fine-grained view
         min_pixel_length = 40
         target_3d_length = (pixel_arrow_length * depth) / focal_length
         min_3d_length = (min_pixel_length * depth) / focal_length
@@ -1538,7 +1578,7 @@ class SituatedOrientationGroundingModule(PredefinedModule):
         fine_colors_bgr = {
             '0': (0, 100, 255),    # Orange-red
             '1': (100, 0, 255),    # Purple  
-            '2': (255, 100, 0),    # Cyan
+            '2': (255, 100, 0),    # Cyan (center/base direction)
             '3': (0, 150, 100),    # Dark green
             '4': (150, 150, 0),    # Teal
         }
@@ -1721,6 +1761,7 @@ class GroundPlaneDetectionModule(PredefinedModule):
             ])
             img_transformed, _ = transform(img, None)
             
+            # Predict with GroundingDINO
             formatted_prompt = f"{self.TEXT_PROMPT.replace(' ', '-')} ."
             
             with torch.autocast(device_type="cuda", enabled=True, dtype=torch.float16):
@@ -1744,23 +1785,28 @@ class GroundPlaneDetectionModule(PredefinedModule):
         else:
             self.write_trace(f"<p>VQA did not find '{self.TEXT_PROMPT}' in any image.</p>")
         
+        # Step 2: Use SAM2 to segment the ground mask from the best box
         ground_mask = None
         masked_image = None
         
         if best_box is not None:
             self.write_trace(f"<h3>Step 2: Best ground detection in image {best_image_idx + 1} with confidence {best_logit.item():.3f}</h3>")
             
+            # Step 3: Use SAM2 to segment the ground mask
             best_image = np.array(images[best_image_idx])
             H, W, _ = best_image.shape
             
+            # Set image for SAM2
             self.sam2_predictor.set_image(best_image)
             
+            # Convert box format
             from groundingdino.util import box_ops
             best_box = best_box.to(self.device)
             scale_tensor = torch.tensor([W, H, W, H], dtype=best_box.dtype, device=self.device)
             box_xyxy = box_ops.box_cxcywh_to_xyxy(best_box.unsqueeze(0)) * scale_tensor
             box_xyxy_np = box_xyxy.detach().cpu().numpy()[0]
             
+            # Predict mask
             masks, scores, logits = self.sam2_predictor.predict(
                 point_coords=None,
                 point_labels=None,
@@ -1791,24 +1837,28 @@ class GroundPlaneDetectionModule(PredefinedModule):
             image_tensors.append(img_tensor)
         image_tensors = torch.stack(image_tensors)
         
+        # Run VGGT
         dtype = torch.bfloat16 if torch.cuda.get_device_capability()[0] >= 8 else torch.float16
         
         with torch.no_grad():
-            with torch.cuda.amp.autocast(dtype=dtype):
+            with torch.amp.autocast("cuda", dtype=dtype):
                 predictions = self.vggt_model(image_tensors)
         
+        # Extract camera parameters
         from vggt.utils.pose_enc import pose_encoding_to_extri_intri
         extrinsics, intrinsics = pose_encoding_to_extri_intri(predictions["pose_enc"], image_tensors.shape[-2:])
         depth_maps = predictions["depth"]
         
+        # Convert to numpy
         extrinsics_np = extrinsics.cpu().numpy().squeeze(0)
         intrinsics_np = intrinsics.cpu().numpy().squeeze(0)
         depth_maps_np = depth_maps.cpu().numpy().squeeze(0)
         
+        # Get world points
         from vggt.utils.geometry import unproject_depth_map_to_point_map
         world_points_all = unproject_depth_map_to_point_map(depth_maps_np, extrinsics_np, intrinsics_np)
         
-        # Extract ground points using mask
+        # Step 5: Extract ground points using mask
         if ground_mask is not None and best_image_idx is not None:
             depth_map_best = depth_maps_np[best_image_idx]
             
@@ -1846,12 +1896,6 @@ class GroundPlaneDetectionModule(PredefinedModule):
         if ground_normal[1] > 0:
             ground_normal *= -1
 
-        # Save point cloud and ground plane data for local visualization
-        self.write_trace("<h3>Saving Point Cloud and Ground Plane Data</h3>")
-        # if 0:
-        #     saved_files = self._save_point_cloud_data( # for debug
-        #         world_points_all, ground_points_valid, ground_normal, centroid, images, best_image_idx
-        #     )
         return {
             "ground_normal": ground_normal,
             "ground_centroid": centroid,
@@ -1871,7 +1915,7 @@ class GroundPlaneDetectionModule(PredefinedModule):
             mask = mask.astype(bool)
         
         mask_rgba = np.zeros((mask.shape[0], mask.shape[1], 4), dtype=np.uint8)
-        mask_rgba[mask] = [0, 255, 0, 255]
+        mask_rgba[mask] = [0, 255, 0, 255]  # Green mask with 100 alpha
         mask_image_pil = PILImage.fromarray(mask_rgba, mode='RGBA')
         
         overlay.paste(mask_image_pil, (0, 0), mask_image_pil)
@@ -1889,74 +1933,81 @@ class GroundPlaneDetectionModule(PredefinedModule):
         return np.array(composite.convert('RGB'))
 
 class ModulesList:
-    def __init__(self, models_path=None, trace_path=None, dataset="mmsi-bench", api_key_path="./api.key", vqa_model="gemini-2.5-flash", sog_model="gemini-2.5-pro"):
+    def __init__(self, models_path=None, trace_path=None, dataset="mmsi-bench", vqa_model="gemini-3.1-flash-lite-preview", sog_model="gemini-3.1-flash-lite-preview"):
         set_devices()
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.dataset = dataset
         self.vqa_call_count = 0
         self.find_obj_call_count = 0
-        self.grounding_dino = load_model(
-            f"{models_path}/GroundingDINO/groundingdino/config/GroundingDINO_SwinT_OGC.py",
-            f"{models_path}/GroundingDINO/weights/groundingdino_swint_ogc.pth"
-        )
-        self.vggt = None
-        print("Initializing and loading VGGT model...")
-        self.vggt_model = VGGT()
-        _URL = "https://huggingface.co/facebook/VGGT-1B/resolve/main/model.pt"
-        #model_dir = os.path.join(models_path, "vggt", "checkpoints")
-        model_dir = 'vggt/checkpoints'
-        os.makedirs(model_dir, exist_ok=True)
-        self.vggt_model.load_state_dict(torch.hub.load_state_dict_from_url(_URL, model_dir=model_dir))
-        self.vggt_model.eval()
-        self.vggt_model = self.vggt_model.to(self.device)
-        print("VGGT Initialized")
-        
-        # Initialize SAM2 for ground plane detection
-        self.sam2_checkpoint = f"{models_path}/sam2/checkpoints/sam2.1_hiera_large.pt"
-        self.sam2_model_cfg = "configs/sam2.1/sam2.1_hiera_l.yaml"
-        from sam2.build_sam import build_sam2
-        from sam2.sam2_image_predictor import SAM2ImagePredictor
-        self.sam2_predictor = SAM2ImagePredictor(
-            build_sam2(
-                self.sam2_model_cfg, self.sam2_checkpoint, device=self.device
+        if dataset == "mmsi-bench":
+            self.grounding_dino = load_model(
+                f"{models_path}/GroundingDINO/groundingdino/config/GroundingDINO_SwinT_OGC.py",
+                f"{models_path}/GroundingDINO/weights/groundingdino_swint_ogc.pth"
             )
-        )
+            self.vggt = None
+            print("Initializing and loading VGGT model...")
+            self.vggt_model = VGGT()
+            _URL = "https://huggingface.co/facebook/VGGT-1B/resolve/main/model.pt"
+            model_dir = os.path.join(_project_root, 'vggt', 'checkpoints')
+            os.makedirs(model_dir, exist_ok=True)
+            self.vggt_model.load_state_dict(torch.hub.load_state_dict_from_url(_URL, model_dir=model_dir))
+            self.vggt_model.eval()
+            self.vggt_model = self.vggt_model.to(self.device)
+            print("VGGT Initialized")
+            
+            # Initialize SAM2 for ground plane detection
+            self.sam2_checkpoint = f"{models_path}/sam2/checkpoints/sam2.1_hiera_large.pt"
+            self.sam2_model_cfg = "configs/sam2.1/sam2.1_hiera_l.yaml"
+            from sam2.build_sam import build_sam2
+            from sam2.sam2_image_predictor import SAM2ImagePredictor
+            self.sam2_predictor = SAM2ImagePredictor(
+                build_sam2(
+                    self.sam2_model_cfg, self.sam2_checkpoint, device=self.device
+                )
+            )
+        else:
+            raise ValueError(f"Dataset '{dataset}' not supported. Supported datasets: mmsi-bench")
 
-        self.modules = self.get_module_list(self.dataset, trace_path, api_key_path, vqa_model, sog_model)
+        self.modules = self.get_module_list(self.dataset, trace_path, vqa_model, sog_model)
         self.module_names = [module.name for module in self.modules]
         self.modules_dict = {module.name: module for module in self.modules}
         self.module_executes = self.get_module_executes(self.dataset)
 
     def get_module_executes(self, dataset):
         executes = {}
-        executes["loc"] = self.modules_dict["loc"].locate_bboxs
-        executes["find_obj"] = self.modules_dict["find_obj"].find
-        executes["relative_cam_movement"] = self.modules_dict["relative_cam_movement"].calculate
-        executes["get_geo_info"] = self.modules_dict["get_geo_info"].extract
-        executes["relative_object_position"] = self.modules_dict["relative_object_position"].calculate
-        executes["calibrate_directions"] = self.modules_dict["calibrate_directions"].calibrate
-        executes["calibrate_from_vector"] = self.modules_dict["calibrate_directions"].calibrate_from_vector
-        executes["calculate_direction"] = self.modules_dict["calculate_direction"].calculate
-        executes["get_object_3d_position"] = self.modules_dict["get_object_3d_position"].get_position
-        executes["ground_plane_detection"] = self.modules_dict["ground_plane_detection"].detect_ground_plane
-        executes["situated_orientation_grounding"] = self.modules_dict["situated_orientation_grounding"].ground_situated_orientation
+        if dataset == 'mmsi-bench':
+            executes["loc"] = self.modules_dict["loc"].locate_bboxs
+            executes["find_obj"] = self.modules_dict["find_obj"].find
+            executes["relative_cam_movement"] = self.modules_dict["relative_cam_movement"].calculate
+            executes["get_geo_info"] = self.modules_dict["get_geo_info"].extract
+            executes["relative_object_position"] = self.modules_dict["relative_object_position"].calculate
+            executes["calibrate_directions"] = self.modules_dict["calibrate_directions"].calibrate
+            executes["calibrate_from_vector"] = self.modules_dict["calibrate_directions"].calibrate_from_vector
+            executes["calculate_direction"] = self.modules_dict["calculate_direction"].calculate
+            executes["get_object_3d_position"] = self.modules_dict["get_object_3d_position"].get_position
+            executes["ground_plane_detection"] = self.modules_dict["ground_plane_detection"].detect_ground_plane
+            executes["situated_orientation_grounding"] = self.modules_dict["situated_orientation_grounding"].ground_situated_orientation
+        else:
+            raise ValueError(f"Dataset '{dataset}' not supported. Supported datasets: mmsi-bench")
 
         return executes
 
-    def get_module_list(self, dataset, trace_path, api_key_path, vqa_model, sog_model):
-        return [
-            LocateModule(dataset=dataset,grounding_dino=self.grounding_dino,trace_path=trace_path,),
-            FindObjModule(trace_path=trace_path, api_key_path=api_key_path, modules_list=self, vqa_model=vqa_model),
-            RelativeCamMovementModule(trace_path),
-            GetGeoInfoModule(self.vggt_model, self.device, trace_path),
-            RelativeObjectPositionModule(trace_path),
-            CalibrateDirectionsModule(trace_path),
-            CalculateDirectionModule(trace_path),
-            GetObject3DPositionModule(modules_list=self, sam2_predictor=self.sam2_predictor, device=self.device, trace_path=trace_path),
-            GroundPlaneDetectionModule(self, self.grounding_dino, self.sam2_predictor, self.vggt_model, self.device, trace_path, prompt="ground floor"),
-            SituatedOrientationGroundingModule(modules_list=self, trace_path=trace_path, vqa_model=vqa_model, sog_model=sog_model),
-        ]
-
+    def get_module_list(self, dataset, trace_path, vqa_model, sog_model):
+        if dataset == "mmsi-bench":
+            return [
+                LocateModule(dataset=dataset,grounding_dino=self.grounding_dino,trace_path=trace_path,),
+                FindObjModule(trace_path=trace_path, modules_list=self, vqa_model=vqa_model),
+                RelativeCamMovementModule(trace_path),
+                GetGeoInfoModule(self.vggt_model, self.device, trace_path),
+                RelativeObjectPositionModule(trace_path),
+                CalibrateDirectionsModule(trace_path),
+                CalculateDirectionModule(trace_path),
+                GetObject3DPositionModule(modules_list=self, sam2_predictor=self.sam2_predictor, device=self.device, trace_path=trace_path),
+                GroundPlaneDetectionModule(self, self.grounding_dino, self.sam2_predictor, self.vggt_model, self.device, trace_path, prompt="ground floor"),
+                SituatedOrientationGroundingModule(modules_list=self, trace_path=trace_path, vqa_model=vqa_model, sog_model=sog_model),
+            ]
+        else:
+            raise ValueError(f"Dataset '{dataset}' not supported. Supported datasets: mmsi-bench")
 
     def set_trace_path(self, trace_path):
         for module in self.modules:

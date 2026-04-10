@@ -1,0 +1,863 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dual-Agent Results Viewer</title>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: #f5f5f5;
+            color: #333;
+            line-height: 1.6;
+        }
+
+        .header {
+            background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
+            color: white;
+            padding: 1rem 2rem;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+
+        .header h1 {
+            font-size: 2rem;
+            font-weight: 300;
+        }
+
+        .main-container {
+            display: flex;
+            height: calc(100vh - 80px);
+        }
+
+        .sidebar {
+            width: 350px;
+            background: white;
+            border-right: 1px solid #e0e0e0;
+            overflow-y: auto;
+            box-shadow: 2px 0 10px rgba(0,0,0,0.05);
+        }
+
+        .content {
+            flex: 1;
+            background: white;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .breadcrumb {
+            background: #f8f9fa;
+            padding: 1rem 2rem;
+            border-bottom: 1px solid #e0e0e0;
+            font-size: 0.9rem;
+        }
+
+        .breadcrumb a {
+            color: #4facfe;
+            text-decoration: none;
+            margin-right: 0.5rem;
+        }
+
+        .breadcrumb a:hover {
+            text-decoration: underline;
+        }
+
+        .directory-list {
+            padding: 1rem;
+        }
+
+        .directory-item {
+            display: flex;
+            align-items: center;
+            padding: 0.75rem;
+            margin: 0.25rem 0;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.2s;
+            border: 1px solid transparent;
+        }
+
+        .directory-item:hover {
+            background: #f8f9fa;
+            border-color: #e0e0e0;
+        }
+
+        .directory-item.selected {
+            background: #e0f7ff;
+            border-color: #4facfe;
+        }
+
+        .directory-item i {
+            margin-right: 0.75rem;
+            width: 20px;
+            text-align: center;
+        }
+
+        .item-info {
+            flex: 1;
+        }
+
+        .item-name {
+            font-weight: 500;
+            margin-bottom: 0.2rem;
+        }
+
+        .item-meta {
+            font-size: 0.8rem;
+            color: #666;
+        }
+
+        .badge {
+            padding: 0.2rem 0.5rem;
+            border-radius: 12px;
+            font-size: 0.7rem;
+            font-weight: 500;
+            margin-left: 0.5rem;
+        }
+
+        .badge-single {
+            background: #e8f5e8;
+            color: #2e7d32;
+        }
+
+        .badge-batch {
+            background: #fff3e0;
+            color: #f57c00;
+        }
+
+        .badge-complete {
+            background: #e3f2fd;
+            color: #1976d2;
+        }
+
+        .exec-env-list {
+            margin-top: 1rem;
+            padding: 1rem;
+            border-top: 1px solid #e0e0e0;
+        }
+
+        .exec-env-item {
+            display: flex;
+            align-items: center;
+            padding: 0.5rem;
+            margin: 0.25rem 0;
+            border-radius: 6px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .exec-env-item:hover {
+            background: #f8f9fa;
+        }
+
+        .exec-env-item.selected {
+            background: #e8f5e8;
+        }
+
+        .correctness-badge {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 12px;
+            font-size: 11px;
+            font-weight: bold;
+            margin-left: 8px;
+        }
+
+        .correctness-badge.correct {
+            background: #4caf50;
+            color: white;
+        }
+
+        .correctness-badge.incorrect {
+            background: #f44336;
+            color: white;
+        }
+
+        .correctness-badge.unknown {
+            background: #9e9e9e;
+            color: white;
+        }
+
+        .question-info {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            width: 100%;
+        }
+
+        .answer-info {
+            font-size: 12px;
+            color: #666;
+            margin-top: 2px;
+        }
+
+        .viewer-tabs {
+            display: flex;
+            background: #f8f9fa;
+            border-bottom: 1px solid #e0e0e0;
+        }
+
+        .tab {
+            padding: 1rem 2rem;
+            cursor: pointer;
+            border-bottom: 3px solid transparent;
+            transition: all 0.2s;
+            font-weight: 500;
+        }
+
+        .tab:hover {
+            background: #e0f7ff;
+        }
+
+        .tab.active {
+            background: white;
+            border-bottom-color: #4facfe;
+            color: #4facfe;
+        }
+
+        .viewer-content {
+            flex: 1;
+            overflow: auto;
+            padding: 2rem;
+        }
+
+        .code-viewer {
+            background: #2d3748;
+            border-radius: 8px;
+            overflow: hidden;
+        }
+
+        .code-header {
+            background: #1a202c;
+            padding: 1rem;
+            color: white;
+            font-weight: 500;
+            border-bottom: 1px solid #4a5568;
+        }
+
+        .code-content {
+            max-height: 70vh;
+            overflow: auto;
+        }
+
+        .json-viewer {
+            background: white;
+            border: 1px solid #e0e0e0;
+            border-radius: 8px;
+            padding: 1.5rem;
+            max-height: 70vh;
+            overflow: auto;
+        }
+
+        .trace-viewer {
+            background: white;
+            border: 1px solid #e0e0e0;
+            border-radius: 8px;
+            height: 70vh;
+            overflow: hidden;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+        }
+
+        .trace-iframe {
+            width: 100%;
+            height: 100%;
+            border: none;
+            border-radius: 0 0 8px 8px;
+        }
+
+        /* Improve iframe content styling */
+        .trace-iframe {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            line-height: 1.6;
+        }
+
+        /* Enhanced trace viewer with better styling */
+        .enhanced-trace-viewer {
+            background: white;
+            border: 1px solid #e0e0e0;
+            border-radius: 8px;
+            height: 70vh;
+            overflow: auto;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+            padding: 1rem;
+            font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+            font-size: 14px;
+            line-height: 1.6;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+        }
+
+        .trace-content {
+            font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+            font-size: 14px;
+            line-height: 1.6;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+            color: #333;
+            background: #f8f9fa;
+            padding: 1rem;
+            border-radius: 4px;
+            margin: 0.5rem 0;
+        }
+
+        .analysis-content {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            font-size: 15px;
+            line-height: 1.8;
+            color: #333;
+            max-width: none;
+            word-wrap: break-word;
+        }
+
+        .analysis-content h1, .analysis-content h2, .analysis-content h3 {
+            color: #2c3e50;
+            margin-top: 1.5rem;
+            margin-bottom: 0.75rem;
+        }
+
+        .analysis-content p {
+            margin-bottom: 1rem;
+            text-align: justify;
+        }
+
+        .analysis-content code {
+            background: #f8f9fa;
+            padding: 2px 4px;
+            border-radius: 3px;
+            font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+        }
+
+        .analysis-content pre {
+            background: #f8f9fa;
+            padding: 1rem;
+            border-radius: 4px;
+            overflow-x: auto;
+            border: 1px solid #e9ecef;
+        }
+
+        .empty-state {
+            text-align: center;
+            padding: 4rem 2rem;
+            color: #666;
+        }
+
+        .empty-state i {
+            font-size: 4rem;
+            margin-bottom: 1rem;
+            color: #ccc;
+        }
+
+        .loading {
+            text-align: center;
+            padding: 2rem;
+            color: #666;
+        }
+
+        .error {
+            background: #ffebee;
+            color: #c62828;
+            padding: 1rem;
+            border-radius: 8px;
+            margin: 1rem 0;
+        }
+
+        .file-status {
+            display: flex;
+            gap: 0.5rem;
+            margin-top: 0.25rem;
+        }
+
+        .file-icon {
+            font-size: 0.8rem;
+        }
+
+        .file-icon.available {
+            color: #4caf50;
+        }
+
+        .file-icon.missing {
+            color: #f44336;
+        }
+
+        /* JSON Viewer Styles */
+        .json-key {
+            color: #1976d2;
+            font-weight: 500;
+        }
+
+        .json-string {
+            color: #388e3c;
+        }
+
+        .json-number {
+            color: #f57c00;
+        }
+
+        .json-boolean {
+            color: #7b1fa2;
+        }
+
+        .json-null {
+            color: #666;
+            font-style: italic;
+        }
+
+        @media (max-width: 768px) {
+            .main-container {
+                flex-direction: column;
+            }
+            
+            .sidebar {
+                width: 100%;
+                height: 300px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1><i class="fas fa-users"></i> Dual-Agent Results Viewer</h1>
+    </div>
+
+    <div class="main-container">
+        <div class="sidebar">
+            <div class="breadcrumb" id="breadcrumb">
+                <span>Loading...</span>
+            </div>
+            
+            <div class="directory-list" id="directoryList">
+                <div class="loading">
+                    <i class="fas fa-spinner fa-spin"></i>
+                    Loading directories...
+                </div>
+            </div>
+
+            <div class="exec-env-list" id="execEnvList" style="display: none;">
+                <h4 style="margin-bottom: 1rem;">Execution Environments</h4>
+            </div>
+        </div>
+
+        <div class="content">
+            <div class="viewer-tabs" id="viewerTabs" style="display: none;">
+                <div class="tab active" data-tab="code">
+                    <i class="fas fa-code"></i> Code
+                </div>
+                <div class="tab" data-tab="json">
+                    <i class="fas fa-database"></i> Variables
+                </div>
+                <div class="tab" data-tab="trace">
+                    <i class="fas fa-search"></i> Trace
+                </div>
+                <div class="tab" data-tab="analysis">
+                    <i class="fas fa-chart-line"></i> Analysis
+                </div>
+            </div>
+
+            <div class="viewer-content">
+                <div class="empty-state" id="emptyState">
+                    <i class="fas fa-folder-open"></i>
+                    <h3>Welcome to Dual-Agent Results Viewer</h3>
+                    <p>Select a directory from the sidebar to explore experiment results</p>
+                </div>
+
+                <div id="codeViewer" class="tab-content" style="display: none;">
+                    <div class="code-viewer">
+                        <div class="code-header">
+                            <i class="fas fa-file-code"></i> executable_program.py
+                        </div>
+                        <div class="code-content">
+                            <pre><code id="codeContent" class="language-python"></code></pre>
+                        </div>
+                    </div>
+                </div>
+
+                <div id="jsonViewer" class="tab-content" style="display: none;">
+                    <div class="json-viewer">
+                        <h4 style="margin-bottom: 1rem;"><i class="fas fa-database"></i> Variables & Results</h4>
+                        <div id="jsonContent"></div>
+                    </div>
+                </div>
+
+                <div id="traceViewer" class="tab-content" style="display: none;">
+                    <div class="trace-viewer">
+                        <iframe id="traceIframe" class="trace-iframe" src=""></iframe>
+                    </div>
+                </div>
+
+                <div id="analysisViewer" class="tab-content" style="display: none;">
+                    <div class="trace-viewer">
+                        <div class="code-header">
+                            <i class="fas fa-chart-line"></i> <span id="analysisFileName">Analysis Report</span>
+                        </div>
+                        <iframe id="analysisIframe" class="trace-iframe" src=""></iframe>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-core.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-python.min.js"></script>
+    <script>
+        class DualAgentViewer {
+            constructor() {
+                this.currentPath = '';
+                this.selectedExecEnv = null;
+                this.currentTab = 'code';
+                
+                this.initializeEventListeners();
+                this.loadDirectory('');
+            }
+
+            initializeEventListeners() {
+                // Tab switching
+                document.querySelectorAll('.tab').forEach(tab => {
+                    tab.addEventListener('click', (e) => {
+                        this.switchTab(e.target.dataset.tab);
+                    });
+                });
+            }
+
+            async loadDirectory(path) {
+                try {
+                    const response = await fetch(`/api/browse?path=${encodeURIComponent(path)}`);
+                    const data = await response.json();
+                    
+                    if (data.error) {
+                        this.showError(data.error);
+                        return;
+                    }
+
+                    this.currentPath = path;
+                    this.renderBreadcrumb(data);
+                    this.renderDirectoryList(data);
+                } catch (error) {
+                    this.showError('Failed to load directory: ' + error.message);
+                }
+            }
+
+            renderBreadcrumb(data) {
+                const breadcrumb = document.getElementById('breadcrumb');
+                const parts = data.current_path ? data.current_path.split('/') : [];
+                
+                let html = '<a href="#" onclick="app.loadDirectory(\'\')">results</a>';
+                let currentPath = '';
+                
+                for (const part of parts) {
+                    if (part) {
+                        currentPath += (currentPath ? '/' : '') + part;
+                        html += ` / <a href="#" onclick="app.loadDirectory('${currentPath}')">${part}</a>`;
+                    }
+                }
+                
+                breadcrumb.innerHTML = html;
+            }
+
+            renderDirectoryList(data) {
+                const directoryList = document.getElementById('directoryList');
+                const execEnvList = document.getElementById('execEnvList');
+                
+                let html = '';
+                
+                // Add parent directory link if not at root
+                if (data.parent !== null) {
+                    html += `
+                        <div class="directory-item" onclick="app.loadDirectory('${data.parent}')">
+                            <i class="fas fa-arrow-up"></i>
+                            <div class="item-info">
+                                <div class="item-name">..</div>
+                                <div class="item-meta">Parent directory</div>
+                            </div>
+                        </div>
+                    `;
+                }
+
+                // Add directories
+                for (const item of data.items) {
+                    if (item.type === 'directory') {
+                        const hasResults = item.result_type !== null;
+                        const icon = hasResults ? 'fa-folder-open' : 'fa-folder';
+                        let badges = '';
+                        
+                        if (item.result_type) {
+                            badges += `<span class="badge badge-${item.result_type}">${item.result_type}</span>`;
+                        }
+                        
+                        if (item.has_exec_env) {
+                            badges += `<span class="badge badge-complete">exec_env</span>`;
+                        }
+                        
+                        if (item.question_count) {
+                            badges += `<span class="badge badge-batch">${item.question_count} questions</span>`;
+                        }
+
+                        const itemPath = item.full_path || (this.currentPath ? this.currentPath + '/' + item.name : item.name);
+                        const clickAction = hasResults ?
+                            `app.loadExecEnvs('${itemPath}')` :
+                            `app.loadDirectory('${itemPath}')`;
+
+                        // Add correctness badge for question directories
+                        let correctnessBadge = '';
+                        if (item.is_question_dir && item.is_correct !== null) {
+                            const badgeClass = item.is_correct ? 'correct' : 'incorrect';
+                            const badgeText = item.is_correct ? '✓ CORRECT' : '✗ INCORRECT';
+                            correctnessBadge = `<span class="correctness-badge ${badgeClass}">${badgeText}</span>`;
+                        } else if (item.is_question_dir) {
+                            correctnessBadge = '<span class="correctness-badge unknown">? UNKNOWN</span>';
+                        }
+
+                        // Add answer info for question directories
+                        let answerInfo = '';
+                        if (item.is_question_dir && (item.predicted_answer || item.ground_truth)) {
+                            answerInfo = `<div class="answer-info">Predicted: ${item.predicted_answer || 'N/A'} | Ground Truth: ${item.ground_truth || 'N/A'}</div>`;
+                        }
+
+                        html += `
+                            <div class="directory-item" onclick="${clickAction}">
+                                <i class="fas ${icon}"></i>
+                                <div class="item-info">
+                                    <div class="question-info">
+                                        <div class="item-name">${item.name}</div>
+                                        ${correctnessBadge}
+                                    </div>
+                                    <div class="item-meta">Directory${badges}</div>
+                                    ${answerInfo}
+                                </div>
+                            </div>
+                        `;
+                    }
+                }
+
+                // Add files
+                for (const item of data.items) {
+                    if (item.type === 'file') {
+                        const size = this.formatFileSize(item.size);
+                        html += `
+                            <div class="directory-item">
+                                <i class="fas fa-file"></i>
+                                <div class="item-info">
+                                    <div class="item-name">${item.name}</div>
+                                    <div class="item-meta">File (${size})</div>
+                                </div>
+                            </div>
+                        `;
+                    }
+                }
+
+                directoryList.innerHTML = html;
+                execEnvList.style.display = 'none';
+            }
+
+            async loadExecEnvs(path) {
+                try {
+                    const response = await fetch(`/api/exec_envs?path=${encodeURIComponent(path)}`);
+                    const execEnvs = await response.json();
+                    
+                    this.renderExecEnvs(execEnvs);
+                    
+                    // Load the first complete exec_env automatically
+                    const firstComplete = execEnvs.find(env => env.complete);
+                    if (firstComplete) {
+                        this.selectExecEnv(firstComplete);
+                    }
+                } catch (error) {
+                    this.showError('Failed to load execution environments: ' + error.message);
+                }
+            }
+
+            renderExecEnvs(execEnvs) {
+                const execEnvList = document.getElementById('execEnvList');
+                
+                let html = '<h4 style="margin-bottom: 1rem;">Execution Environments</h4>';
+                
+                for (const env of execEnvs) {
+                    const isComplete = env.complete;
+                    const className = isComplete ? 'exec-env-item' : 'exec-env-item disabled';
+                    
+                    // Add correctness badge
+                    let correctnessBadge = '';
+                    if (env.is_correct !== null) {
+                        const badgeClass = env.is_correct ? 'correct' : 'incorrect';
+                        const badgeText = env.is_correct ? '✓' : '✗';
+                        correctnessBadge = `<span class="correctness-badge ${badgeClass}">${badgeText}</span>`;
+                    } else {
+                        correctnessBadge = '<span class="correctness-badge unknown">?</span>';
+                    }
+
+                    // Add answer info
+                    let answerInfo = '';
+                    if (env.predicted_answer || env.ground_truth) {
+                        answerInfo = `<div class="answer-info">Pred: ${env.predicted_answer || 'N/A'} | GT: ${env.ground_truth || 'N/A'}</div>`;
+                    }
+                    
+                    const iterLabel = env.iteration !== undefined ? ` (iter ${env.iteration})` : '';
+                    html += `
+                        <div class="${className}" onclick="${isComplete ? `app.selectExecEnv(${JSON.stringify(env).replace(/"/g, '&quot;')})` : ''}">
+                            <div class="item-info">
+                                <div class="question-info">
+                                    <div class="item-name">Question ${env.question_id}${iterLabel}</div>
+                                    ${correctnessBadge}
+                                </div>
+                                ${answerInfo}
+                                <div class="file-status">
+                                    <i class="fas fa-file-code file-icon ${env.files.executable_program ? 'available' : 'missing'}" title="executable_program.py"></i>
+                                    <i class="fas fa-database file-icon ${env.files.result_json ? 'available' : 'missing'}" title="result.json"></i>
+                                    <i class="fas fa-search file-icon ${env.files.trace_html ? 'available' : 'missing'}" title="trace.html"></i>
+                                    <i class="fas fa-chart-line file-icon ${env.files.analysis_html ? 'available' : 'missing'}" title="analysis_question_*.html"></i>
+                                </div>
+                            </div>
+                        </div>
+                    `;
+                }
+                
+                execEnvList.innerHTML = html;
+                execEnvList.style.display = 'block';
+            }
+
+            async selectExecEnv(env) {
+                this.selectedExecEnv = env;
+                
+                // Highlight selected item
+                document.querySelectorAll('.exec-env-item').forEach(item => {
+                    item.classList.remove('selected');
+                });
+                event.target.closest('.exec-env-item').classList.add('selected');
+                
+                // Show tabs and load content
+                document.getElementById('viewerTabs').style.display = 'flex';
+                document.getElementById('emptyState').style.display = 'none';
+                
+                // Load all files
+                await this.loadAllFiles(env.path);
+            }
+
+            async loadAllFiles(basePath) {
+                try {
+                    // Load code
+                    await this.loadFile(`${basePath}/executable_program.py`, 'code');
+                    
+                    // Load JSON
+                    await this.loadFile(`${basePath}/result.json`, 'json');
+                    
+                    // Load trace
+                    this.loadTrace(`${basePath}/trace.html`);
+                    
+                    // Load analysis if available
+                    if (this.selectedExecEnv && this.selectedExecEnv.analysis_html_name) {
+                        this.loadAnalysis(`${basePath}/${this.selectedExecEnv.analysis_html_name}`);
+                    }
+                    
+                    // Switch to the current tab
+                    this.switchTab(this.currentTab);
+                } catch (error) {
+                    this.showError('Failed to load files: ' + error.message);
+                }
+            }
+
+            async loadFile(filePath, type) {
+                try {
+                    const response = await fetch(`/api/file?path=${encodeURIComponent(filePath)}`);
+                    const data = await response.json();
+                    
+                    if (data.error) {
+                        this.showError(data.error);
+                        return;
+                    }
+
+                    if (type === 'code' && data.type === 'python') {
+                        document.getElementById('codeContent').textContent = data.content;
+                        Prism.highlightElement(document.getElementById('codeContent'));
+                    } else if (type === 'json' && data.type === 'json') {
+                        document.getElementById('jsonContent').innerHTML = this.formatJSON(data.content);
+                    }
+                } catch (error) {
+                    this.showError(`Failed to load ${type}: ` + error.message);
+                }
+            }
+
+            loadTrace(filePath) {
+                const iframe = document.getElementById('traceIframe');
+                iframe.src = `/api/serve_html?path=${encodeURIComponent(filePath)}`;
+            }
+
+            loadAnalysis(filePath) {
+                const iframe = document.getElementById('analysisIframe');
+                const fileName = document.getElementById('analysisFileName');
+                iframe.src = `/api/serve_html?path=${encodeURIComponent(filePath)}`;
+                fileName.textContent = filePath.split('/').pop();
+            }
+
+            switchTab(tabName) {
+                this.currentTab = tabName;
+                
+                // Update tab buttons
+                document.querySelectorAll('.tab').forEach(tab => {
+                    tab.classList.remove('active');
+                });
+                document.querySelector(`[data-tab="${tabName}"]`).classList.add('active');
+                
+                // Update content
+                document.querySelectorAll('.tab-content').forEach(content => {
+                    content.style.display = 'none';
+                });
+                
+                const contentMap = {
+                    'code': 'codeViewer',
+                    'json': 'jsonViewer',
+                    'trace': 'traceViewer',
+                    'analysis': 'analysisViewer'
+                };
+                
+                document.getElementById(contentMap[tabName]).style.display = 'block';
+            }
+
+            formatJSON(obj) {
+                return '<pre>' + this.syntaxHighlightJSON(JSON.stringify(obj, null, 2)) + '</pre>';
+            }
+
+            syntaxHighlightJSON(json) {
+                json = json.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+                return json.replace(/("(\\u[a-zA-Z0-9]{4}|\\[^u]|[^\\"])*"(\s*:)?|\b(true|false|null)\b|-?\d+(?:\.\d*)?(?:[eE][+\-]?\d+)?)/g, function (match) {
+                    var cls = 'json-number';
+                    if (/^"/.test(match)) {
+                        if (/:$/.test(match)) {
+                            cls = 'json-key';
+                        } else {
+                            cls = 'json-string';
+                        }
+                    } else if (/true|false/.test(match)) {
+                        cls = 'json-boolean';
+                    } else if (/null/.test(match)) {
+                        cls = 'json-null';
+                    }
+                    return '<span class="' + cls + '">' + match + '</span>';
+                });
+            }
+
+            formatFileSize(bytes) {
+                if (bytes === 0) return '0 B';
+                const k = 1024;
+                const sizes = ['B', 'KB', 'MB', 'GB'];
+                const i = Math.floor(Math.log(bytes) / Math.log(k));
+                return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+            }
+
+            showError(message) {
+                const content = document.querySelector('.viewer-content');
+                content.innerHTML = `<div class="error"><i class="fas fa-exclamation-triangle"></i> ${message}</div>`;
+            }
+        }
+
+        // Initialize the application
+        const app = new DualAgentViewer();
+    </script>
+</body>
+</html>

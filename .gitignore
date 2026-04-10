@@ -1,0 +1,41 @@
+# Model weights (download via scripts/download_weights.sh)
+src/models/
+vggt/checkpoints/
+
+# Results and outputs
+src/results/
+src/debug_results/
+
+# Large / generated directories
+proj/
+dataset/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+build/
+dist/
+
+# Environment
+.env
+*.key
+api.key
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Local scripts
+scripts/visualize_results.py
+
+# Temp
+*.tmp
+*.log
+**/__pycache__
+__pycache__
