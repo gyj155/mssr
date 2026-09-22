@@ -4,7 +4,7 @@ Official implementation of **Pursuing Minimal Sufficiency in Spatial Reasoning**
 
 Yejie Guo, Yunzhong Hou, Wufei Ma, Meng Tang, Ming-Hsuan Yang
 
-[Paper](https://arxiv.org/abs/2510.16688) · [Full text (HTML)](https://arxiv.org/html/2510.16688v2) · [ICLR / OpenReview](https://openreview.net/forum?id=bZAKJwyn1n) · [Research overview](docs/index.html) · [BibTeX](CITATION.bib)
+[Paper](https://arxiv.org/abs/2510.16688) · [Full text (HTML)](https://arxiv.org/html/2510.16688v2) · [ICLR / OpenReview](https://openreview.net/forum?id=bZAKJwyn1n) · [Project Page](https://gyj155.github.io/mssr/) · [BibTeX](CITATION.bib)
 
 MSSR is a zero-shot, training-free dual-agent framework for **multi-view 3D spatial reasoning**. It combines expert perception tools with iterative evidence pruning, helping a vision-language model answer spatial questions from a compact, sufficient set of 3D information.
 
