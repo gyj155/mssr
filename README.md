@@ -1,11 +1,43 @@
 # MSSR: Minimal Sufficient Spatial Reasoner
 
-Official implementation of **Pursuing Minimal Sufficiency in Spatial Reasoning** [[arXiv]](https://arxiv.org/abs/2510.16688).
+Official implementation of **Pursuing Minimal Sufficiency in Spatial Reasoning**, ICLR 2026.
 
-MSSR is a zero-shot, training-free dual-agent framework for multi-view 3D spatial reasoning. It constructs a set of 3D perception results that is both sufficient to answer a spatial query and minimal to avoid reasoning over redundant information.
+Yejie Guo, Yunzhong Hou, Wufei Ma, Meng Tang, Ming-Hsuan Yang
 
-![alt text](assets/overview.jpg)
-![alt text](assets/method2.jpg)
+[Paper](https://arxiv.org/abs/2510.16688) · [Full text (HTML)](https://arxiv.org/html/2510.16688v2) · [ICLR / OpenReview](https://openreview.net/forum?id=bZAKJwyn1n) · [Research overview](docs/index.html) · [BibTeX](CITATION.bib)
+
+MSSR is a zero-shot, training-free dual-agent framework for **multi-view 3D spatial reasoning**. It combines expert perception tools with iterative evidence pruning, helping a vision-language model answer spatial questions from a compact, sufficient set of 3D information.
+
+## How MSSR works
+
+Given multiple images of the same scene and a natural-language question, MSSR builds a **Minimal Sufficient Set (MSS)** of spatial evidence before answering.
+
+1. **Perceive:** a Perception Agent writes Python to call expert vision modules, including VGGT for reconstruction, GroundingDINO and SAM2 for object localization, and geometric computation tools.
+2. **Ground directions:** Situated Orientation Grounding (SOG) uses visual prompts and coarse-to-fine candidate selection to map language-conditioned directions to 3D vectors.
+3. **Curate:** a Reasoning Agent removes evidence irrelevant to its question-specific plan and requests missing information from the Perception Agent.
+4. **Answer:** final reasoning uses the curated evidence set, with prior context discarded. The loop approximates the MSS; it does not certify a globally optimal minimum.
+
+![MSSR architecture: perception gathers spatial evidence and reasoning prunes it or requests missing information.](assets/overview.jpg)
+![Worked MSSR example showing evidence selection and a targeted request before the final decision.](assets/method2.jpg)
+
+## Reported results
+
+Accuracy (%) from [arXiv v2, Table 1](https://arxiv.org/html/2510.16688v2#S4.T1). These are paper-reported results under its evaluation settings, not new measurements or a claim about the current leaderboard.
+
+| Method | MMSI-Bench | ViewSpatial-Bench |
+| --- | ---: | ---: |
+| GPT-4o baseline | 30.3 | 35.0 |
+| MSSR with GPT-4o | **49.5** | **51.8** |
+| Absolute improvement | +19.2 points | +16.8 points |
+
+## Research scope
+
+MSSR is relevant to training-free multi-view spatial question answering, tool-augmented vision-language agents, visual programming, and question-conditioned information selection. Its SOG module addresses language-grounded orientation, including object-facing and situation-dependent directions. The paper also explores using grounded reasoning traces as supervision in a separate preliminary fine-tuning experiment.
+
+The main framework uses pretrained models without task-specific training. Training-free does not mean model-free or compute-free: local vision models and language-model inference are still required. Reconstruction, localization and orientation errors can propagate to the answer; iterative inference also incurs API latency. See [the paper's limitations](https://arxiv.org/html/2510.16688v2#A11).
+
+For a fuller explanation, read the [research note](docs/research-note.md).
+
 ## Setup
 
 ### 1. Environment
@@ -135,11 +167,16 @@ We would like to thank the following works for their contributions to the commun
 
 ## Citation
 
+The preferred citation is the ICLR 2026 conference paper. The 2025 arXiv preprint and its later revisions are versions of the same work.
+
 ```bibtex
-@article{guo2025pursuing,
-  title={Pursuing Minimal Sufficiency in Spatial Reasoning},
-  author={Guo, Yejie and Hou, Yunzhong and Ma, Wufei and Tang, Meng and Yang, Ming-Hsuan},
-  journal={arXiv preprint arXiv:2510.16688},
-  year={2025}
+@inproceedings{guo2026pursuing,
+ author = {Guo, Yejie and Hou, Yunzhong and Ma, Wufei and Tang, Meng and Yang, Ming-Hsuan},
+ booktitle = {International Conference on Learning Representations},
+ pages = {121192--121222},
+ title = {Pursuing Minimal Sufficiency in Spatial Reasoning},
+ url = {https://proceedings.iclr.cc/paper_files/paper/2026/file/c4ff64d68ba491b9048f00d25690d363-Paper-Conference.pdf},
+ volume = {2026},
+ year = {2026}
 }
 ```

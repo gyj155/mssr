@@ -1,0 +1,70 @@
+{
+  "cff-version": "1.2.0",
+  "message": "If you use MSSR in your research, please cite the ICLR 2026 paper in preferred-citation.",
+  "title": "MSSR: Minimal Sufficient Spatial Reasoner",
+  "type": "software",
+  "authors": [
+    {
+      "family-names": "Guo",
+      "given-names": "Yejie"
+    },
+    {
+      "family-names": "Hou",
+      "given-names": "Yunzhong"
+    },
+    {
+      "family-names": "Ma",
+      "given-names": "Wufei"
+    },
+    {
+      "family-names": "Tang",
+      "given-names": "Meng"
+    },
+    {
+      "family-names": "Yang",
+      "given-names": "Ming-Hsuan"
+    }
+  ],
+  "repository-code": "https://github.com/gyj155/mssr",
+  "license": "MIT",
+  "keywords": [
+    "spatial reasoning",
+    "vision-language models",
+    "multi-view reasoning",
+    "visual programming",
+    "minimal sufficient set",
+    "situated orientation grounding"
+  ],
+  "preferred-citation": {
+    "type": "conference-paper",
+    "title": "Pursuing Minimal Sufficiency in Spatial Reasoning",
+    "authors": [
+      {
+        "family-names": "Guo",
+        "given-names": "Yejie"
+      },
+      {
+        "family-names": "Hou",
+        "given-names": "Yunzhong"
+      },
+      {
+        "family-names": "Ma",
+        "given-names": "Wufei"
+      },
+      {
+        "family-names": "Tang",
+        "given-names": "Meng"
+      },
+      {
+        "family-names": "Yang",
+        "given-names": "Ming-Hsuan"
+      }
+    ],
+    "collection-title": "International Conference on Learning Representations",
+    "year": 2026,
+    "volume": "2026",
+    "start": "121192",
+    "end": "121222",
+    "url": "https://openreview.net/forum?id=bZAKJwyn1n"
+  }
+}

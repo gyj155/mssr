@@ -1,0 +1,295 @@
+<!DOCTYPE html>
+<html lang="en">
+ <head>
+  <meta charset="utf-8"/>
+  <meta content="width=device-width, initial-scale=1" name="viewport"/>
+  <title>
+   Pursuing Minimal Sufficiency in Spatial Reasoning | MSSR · ICLR 2026
+  </title>
+  <meta content="MSSR is a training-free dual-agent framework for multi-view 3D spatial reasoning, combining expert perception tools, situated orientation grounding and evidence pruning." name="description"/>
+  <link href="https://gyj155.github.io/mssr/" rel="canonical"/>
+  <link href="style.css" rel="stylesheet"/>
+  <meta content="Yejie Guo" name="citation_author"/>
+  <meta content="Yunzhong Hou" name="citation_author"/>
+  <meta content="Wufei Ma" name="citation_author"/>
+  <meta content="Meng Tang" name="citation_author"/>
+  <meta content="Ming-Hsuan Yang" name="citation_author"/>
+  <meta content="Pursuing Minimal Sufficiency in Spatial Reasoning" name="citation_title"/>
+  <meta content="2026" name="citation_publication_date"/>
+  <meta content="International Conference on Learning Representations" name="citation_conference_title"/>
+  <meta content="121192" name="citation_firstpage"/>
+  <meta content="121222" name="citation_lastpage"/>
+  <meta content="https://proceedings.iclr.cc/paper_files/paper/2026/file/c4ff64d68ba491b9048f00d25690d363-Paper-Conference.pdf" name="citation_pdf_url"/>
+  <script type="application/ld+json">
+   {"@context": "https://schema.org", "@type": "ScholarlyArticle", "headline": "Pursuing Minimal Sufficiency in Spatial Reasoning", "name": "Pursuing Minimal Sufficiency in Spatial Reasoning", "url": "https://gyj155.github.io/mssr/", "author": [{"@type": "Person", "name": "Yejie Guo", "url": "https://gyj155.github.io/"}, {"@type": "Person", "name": "Yunzhong Hou", "url": "https://hou-yz.github.io/"}, {"@type": "Person", "name": "Wufei Ma", "url": "https://wufeim.github.io/"}, {"@type": "Person", "name": "Meng Tang", "url": "https://www.mengtang.org/"}, {"@type": "Person", "name": "Ming-Hsuan Yang", "url": "https://faculty.ucmerced.edu/mhyang/"}], "datePublished": "2026", "description": "MSSR is a training-free dual-agent framework for multi-view 3D spatial reasoning, combining expert perception tools, situated orientation grounding and evidence pruning.", "sameAs": ["https://arxiv.org/abs/2510.16688", "https://openreview.net/forum?id=bZAKJwyn1n"], "isPartOf": {"@type": "PublicationVolume", "name": "International Conference on Learning Representations", "volumeNumber": "2026"}, "pageStart": "121192", "pageEnd": "121222", "keywords": ["spatial reasoning", "vision-language models", "multi-view reasoning", "visual programming", "minimal sufficient set", "situated orientation grounding"]}
+  </script>
+ </head>
+ <body>
+  <main>
+   <nav aria-label="Main navigation">
+    <strong>
+     MSSR / ICLR 2026
+    </strong>
+    <a href="#method">
+     Method
+    </a>
+    <a href="#results">
+     Results
+    </a>
+    <a href="#questions">
+     Research questions
+    </a>
+    <a href="#citation">
+     Cite
+    </a>
+   </nav>
+   <header>
+    <div class="eyebrow">
+     Multi-view 3D spatial reasoning
+    </div>
+    <h1>
+     Pursuing Minimal Sufficiency in Spatial Reasoning
+    </h1>
+    <p class="authors">
+     <a href="https://gyj155.github.io/">
+      Yejie Guo
+     </a>
+     ·
+     <a href="https://hou-yz.github.io/">
+      Yunzhong Hou
+     </a>
+     ·
+     <a href="https://wufeim.github.io/">
+      Wufei Ma
+     </a>
+     ·
+     <a href="https://www.mengtang.org/">
+      Meng Tang
+     </a>
+     ·
+     <a href="https://faculty.ucmerced.edu/mhyang/">
+      Ming-Hsuan Yang
+     </a>
+    </p>
+    <p class="small">
+     International Conference on Learning Representations · 2026 · pp. 121192–121222
+    </p>
+    <p>
+     MSSR — Minimal Sufficient Spatial Reasoner — is a zero-shot, training-free dual-agent framework that combines expert 3D perception with iterative information selection.
+    </p>
+    <div class="links">
+     <a href="https://arxiv.org/abs/2510.16688">
+      Read the paper
+     </a>
+     <a href="https://github.com/gyj155/mssr">
+      Code &amp; setup
+     </a>
+     <a download="" href="citation.bib">
+      BibTeX
+     </a>
+    </div>
+   </header>
+   <section aria-labelledby="abstract">
+    <h2 id="abstract">
+     Abstract
+    </h2>
+    <p>
+     MSSR is a training-free framework for multi-view spatial reasoning that addresses two challenges: limited 3D perception and distracting information. A Perception Agent uses expert vision tools to extract spatial evidence, including language-conditioned directions through Situated Orientation Grounding (SOG). A Reasoning Agent prunes irrelevant details and requests missing evidence to construct a Minimal Sufficient Set before answering. Experiments on MMSI-Bench and ViewSpatial-Bench demonstrate improved accuracy, while the resulting evidence sets and reasoning traces make the process interpretable.
+    </p>
+   </section>
+   <figure>
+    <img alt="MSSR framework: a Perception Agent extracts 3D evidence and a Reasoning Agent prunes irrelevant facts or requests missing information." height="1452" src="assets/overview.jpg" width="2731"/>
+    <figcaption>
+     MSSR couples evidence acquisition with question-specific information curation. Figure from the paper.
+    </figcaption>
+   </figure>
+   <section id="method">
+    <h2>
+     From multiple views to a focused answer
+    </h2>
+    <div class="grid">
+     <article class="card">
+      <h3>
+       1. Extract spatial evidence
+      </h3>
+      <p>
+       The Perception Agent writes Python that calls expert modules: VGGT for reconstruction, GroundingDINO and SAM2 for localization, and tools for coordinate calibration and numerical computation.
+      </p>
+     </article>
+     <article class="card">
+      <h3>
+       2. Ground language to directions
+      </h3>
+      <p>
+       Situated Orientation Grounding (SOG) overlays candidate directions on images. Coarse-to-fine visual selection maps object-facing and situation-dependent descriptions to 3D vectors.
+      </p>
+     </article>
+     <article class="card">
+      <h3>
+       3. Prune and request
+      </h3>
+      <p>
+       The Reasoning Agent selects facts needed by its plan, discards irrelevant evidence, and asks the Perception Agent to obtain missing information. Execution state can be reused across rounds.
+      </p>
+     </article>
+     <article class="card">
+      <h3>
+       4. Reason over the selected set
+      </h3>
+      <p>
+       Final reasoning uses the curated Minimal Sufficient Set with prior context discarded. MSSR approximates this ideal set; it does not prove global minimality for every question.
+      </p>
+     </article>
+    </div>
+    <p>
+     <a href="https://arxiv.org/html/2510.16688v2#S3">
+      Read the full method →
+     </a>
+    </p>
+   </section>
+   <section id="results">
+    <h2>
+     Reported benchmark results
+    </h2>
+    <p>
+     <a href="https://arxiv.org/html/2510.16688v2#S4.T1">
+      Table 1
+     </a>
+     . Accuracy (%) with GPT-4o as the backbone.
+    </p>
+    <table>
+     <thead>
+      <tr>
+       <th scope="col">
+        Method
+       </th>
+       <th scope="col">
+        MMSI-Bench
+       </th>
+       <th scope="col">
+        ViewSpatial-Bench
+       </th>
+      </tr>
+     </thead>
+     <tbody>
+      <tr>
+       <th scope="row">
+        GPT-4o baseline
+       </th>
+       <td>
+        30.3
+       </td>
+       <td>
+        35.0
+       </td>
+      </tr>
+      <tr>
+       <th scope="row">
+        MSSR
+       </th>
+       <td>
+        <strong>
+         49.5
+        </strong>
+       </td>
+       <td>
+        <strong>
+         51.8
+        </strong>
+       </td>
+      </tr>
+      <tr>
+       <th scope="row">
+        Improvement
+       </th>
+       <td>
+        +19.2 points
+       </td>
+       <td>
+        +16.8 points
+       </td>
+      </tr>
+     </tbody>
+    </table>
+    <p class="small">
+     Historical paper-reported measurements under its evaluation settings. These are not new reproduction results or a current leaderboard ranking. Consult the paper and code for the evaluation protocol.
+    </p>
+   </section>
+   <section id="questions">
+    <h2>
+     Research questions
+    </h2>
+    <h3>
+     Can multi-view spatial reasoning improve without fine-tuning?
+    </h3>
+    <p>
+     MSSR's main framework uses pretrained vision and language models without task-specific training. Its contribution is the perception–reasoning workflow and evidence selection. It still requires local vision inference and language-model calls.
+    </p>
+    <h3>
+     Can irrelevant 3D information hurt reasoning?
+    </h3>
+    <p>
+     The paper's controlled subset analysis normalizes evidence sufficiency before comparing set sizes. Reducing the average evidence count from 17.3 to 5.9 accompanies an accuracy change from 45.8% to 48.3%. This supports pruning for the studied setting, rather than a universal claim that less context is always better.
+     <a href="https://arxiv.org/html/2510.16688v2#S4.SS3">
+      Analysis
+     </a>
+     .
+    </p>
+    <h3>
+     How is language-conditioned orientation estimated?
+    </h3>
+    <p>
+     SOG turns direction estimation into selection among 3D arrows rendered in images, then refines the candidates. This supports reference-frame and object-facing questions; it is not designed for sub-degree pose accuracy.
+    </p>
+    <h3>
+     Evidence selection and spatial reasoning
+    </h3>
+    <p>
+     MSSR connects tool-based 3D perception with question-specific evidence selection. Its two agents refine the information used for spatial reasoning, while SOG handles language-conditioned directions. The resulting evidence sets also provide a basis for studying grounded reasoning traces.
+    </p>
+    <h3>
+     What are the limitations?
+    </h3>
+    <p>
+     Reconstruction and localization errors can propagate through the pipeline. The reasoning stage can still make logical errors or stop early, and iterative model calls add latency. The paper discusses these issues in
+     <a href="https://arxiv.org/html/2510.16688v2#A8">
+      failure analysis
+     </a>
+     and
+     <a href="https://arxiv.org/html/2510.16688v2#A11">
+      limitations
+     </a>
+     .
+    </p>
+   </section>
+   <figure>
+    <img alt="Worked example of MSSR pruning an evidence set and requesting missing calculations before answering." loading="lazy" src="assets/method2.jpg"/>
+    <figcaption>
+     An example of evidence curation and targeted information requests. Figure from the paper.
+    </figcaption>
+   </figure>
+   <section id="citation">
+    <h2>
+     Citation
+    </h2>
+    <p>
+     Preferred citation: the ICLR 2026 conference paper.
+     <a download="" href="citation.bib">
+      Download BibTeX
+     </a>
+     .
+    </p>
+    <pre>@inproceedings{guo2026pursuing,
+ author = {Guo, Yejie and Hou, Yunzhong and Ma, Wufei and Tang, Meng and Yang, Ming-Hsuan},
+ booktitle = {International Conference on Learning Representations},
+ pages = {121192--121222},
+ title = {Pursuing Minimal Sufficiency in Spatial Reasoning},
+ url = {https://proceedings.iclr.cc/paper_files/paper/2026/file/c4ff64d68ba491b9048f00d25690d363-Paper-Conference.pdf},
+ volume = {2026},
+ year = {2026}
+}
+</pre>
+   </section>
+  </main>
+ </body>
+</html>
