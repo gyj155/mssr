@@ -48,101 +48,196 @@ def get_methods_from_json(api_json):
     return methods, namespace
 
 
+class ModelRequestError(RuntimeError):
+    def __init__(self, message, quota_exhausted=False):
+        super().__init__(message)
+        self.quota_exhausted = quota_exhausted
+
+
 class Generator:
-    SUPPORTED_MODELS = [ # you can add other models
-        "gemini-3.1-flash-lite-preview",
-        "gemini-2.5-flash",
-        "gemini-2.5-pro",
-        "gemini-2.0-flash",
-        "gpt-4o",
-        "gpt-4o-mini",
+    SUPPORTED_MODELS = [
+        "gpt-4o-2024-11-20", "gemini-3.1-flash-lite",
+        "gemini-3.5-flash", "gemini-3.1-pro-preview",
+        # deprecated "gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.0-flash","gpt-4o", "gpt-4o-mini",
+
     ]
 
-    def __init__(self, model_name="gemini-3.1-flash-lite-preview", temperature=0.7):
+    def __init__(self, model_name="gemini-3.1-flash-lite", temperature=0.7):
         self.temperature = temperature
         self.model_name = model_name
-
-        if model_name not in self.SUPPORTED_MODELS:
-            raise ValueError(f"Model {model_name} not supported. Supported: {self.SUPPORTED_MODELS}")
-
-        api_key, base_url = self._resolve_api_config(model_name)
-        print(f"Using model: {model_name} via {base_url}")
-        self.client = OpenAI(api_key=api_key, base_url=base_url)
+        self.custom_endpoint = bool(os.getenv("API_BASE_URL"))
+        if model_name not in self.SUPPORTED_MODELS and not self.custom_endpoint:
+            raise ValueError(f"Unsupported model: {model_name}")
+        vertex = os.getenv("GOOGLE_GENAI_USE_VERTEXAI", "").lower()
+        self.vertex = model_name.startswith("gemini-") and not self.custom_endpoint and (
+            vertex in ("true", "1") or (not vertex and not os.getenv("GOOGLE_API_KEY")))
+        if self.vertex:
+            try:
+                import google.auth
+                from google import genai
+            except ImportError as exc:
+                raise ImportError("Vertex AI requires google-genai; install it with: pip install -U google-genai") from exc
+            credentials, project = google.auth.default(scopes=["https://www.googleapis.com/auth/cloud-platform"])
+            project = os.getenv("GOOGLE_CLOUD_PROJECT") or project or getattr(credentials, "quota_project_id", None)
+            if not project:
+                raise ValueError("Set GOOGLE_CLOUD_PROJECT for Vertex AI")
+            self.client = genai.Client(vertexai=True, project=project,
+                location=os.getenv("GOOGLE_CLOUD_LOCATION", "global"), credentials=credentials,
+                http_options={"timeout": 180000, "retry_options": {"attempts": 1}})
+        else:
+            api_key, base_url = self._resolve_api_config(model_name)
+            self.client = OpenAI(api_key=api_key, base_url=base_url, max_retries=0, timeout=180)
+        print(f"Using model: {model_name}")
 
     @staticmethod
     def _resolve_api_config(model_name):
-        """Resolve API key and base URL from environment variables.
-
-        Priority order:
-        1. API_BASE_URL + API_KEY (explicit override for custom endpoints)
-        2. OPENAI_API_KEY (native OpenAI, for gpt-* models)
-        3. GOOGLE_API_KEY via OpenAI-compatible endpoint (for gemini-* models)
-        """
-        # Check for explicit override first
         if os.getenv("API_BASE_URL"):
-            api_key = os.getenv("API_KEY") or os.getenv("OPENAI_API_KEY")
-            return api_key, os.getenv("API_BASE_URL")
-
-        # Native OpenAI
+            key = os.getenv("API_KEY") or os.getenv("OPENAI_API_KEY")
+            if not key:
+                raise ValueError("Set API_KEY or OPENAI_API_KEY for API_BASE_URL")
+            return key, os.environ["API_BASE_URL"]
         if model_name.startswith("gpt-") and os.getenv("OPENAI_API_KEY"):
-            return os.getenv("OPENAI_API_KEY"), "https://api.openai.com/v1"
-
-        # Google Gemini via OpenAI-compatible endpoint
+            return os.environ["OPENAI_API_KEY"], "https://api.openai.com/v1"
         if model_name.startswith("gemini-") and os.getenv("GOOGLE_API_KEY"):
-            return os.getenv("GOOGLE_API_KEY"), "https://generativelanguage.googleapis.com/v1beta/openai/"
+            return os.environ["GOOGLE_API_KEY"], "https://generativelanguage.googleapis.com/v1beta/openai/"
+        raise ValueError("Set OPENAI_API_KEY, GOOGLE_API_KEY, or API_BASE_URL with API_KEY; Vertex AI uses ADC")
 
-        raise ValueError(
-            "No API key found. Set one of the following environment variables:\n"
-            "  - OPENAI_API_KEY (for GPT models via OpenAI)\n"
-            "  - GOOGLE_API_KEY (for Gemini models via Google)\n"
-            "  - API_BASE_URL + API_KEY (for custom OpenAI-compatible endpoints)"
-        )
+    @property
+    def thinking_level(self):
+        if self.custom_endpoint:
+            return None
+        if self.model_name == "gemini-3.1-pro-preview":
+            return "HIGH"
+        if self.model_name in ("gemini-3.5-flash", "gemini-3.1-flash-lite"):
+            return "LOW"
+        return None
+
+    @property
+    def max_output_tokens(self):
+        if self.custom_endpoint or not self.model_name.startswith("gemini-"):
+            return None
+        return 32768 if self.thinking_level == "HIGH" else 8192
+
+    def _vertex_generate(self, messages, max_output_tokens, response_format):
+        from google.genai import types
+        options = {}
+        if response_format is not None:
+            if response_format.get("type") != "json_schema":
+                raise ValueError("Gemini structured output requires a JSON schema")
+            options.update(response_mime_type="application/json",
+                           response_json_schema=response_format["json_schema"]["schema"])
+        if self.thinking_level is not None:
+            options["thinking_config"] = types.ThinkingConfig(thinking_level=self.thinking_level)
+        contents, instructions = [], []
+        for message in messages:
+            role, content = message["role"], message["content"]
+            items = [{"type": "text", "text": content}] if isinstance(content, str) else content
+            if role == "system":
+                if any(item["type"] != "text" for item in items):
+                    raise ValueError("Gemini system instructions must contain only text")
+                instructions.extend(item["text"] for item in items)
+                continue
+            if role not in ("user", "assistant"):
+                raise ValueError(f"Unsupported Gemini message role: {role}")
+            parts = []
+            for item in items:
+                if item["type"] == "text":
+                    parts.append(types.Part.from_text(text=item["text"]))
+                elif item["type"] == "image_url":
+                    url = item["image_url"]["url"]
+                    if not url.startswith("data:image/") or ";base64," not in url:
+                        raise ValueError("Vertex AI images must use base64 image data URLs")
+                    header, encoded = url.split(",", 1)
+                    parts.append(types.Part.from_bytes(data=base64.b64decode(encoded, validate=True),
+                        mime_type=header.split(":", 1)[1].split(";")[0]))
+                else:
+                    raise ValueError(f"Unsupported content type: {item['type']}")
+            contents.append(types.Content(role="model" if role == "assistant" else "user", parts=parts))
+        response = self.client.models.generate_content(model=self.model_name, contents=contents,
+            config=types.GenerateContentConfig(system_instruction="\n\n".join(instructions) or None,
+                temperature=self.temperature, max_output_tokens=max_output_tokens, **options))
+        candidate = response.candidates[0] if response.candidates else None
+        reason = getattr(candidate, "finish_reason", None)
+        reason = getattr(reason, "value", reason)
+        blocked = reason in ("SAFETY", "RECITATION", "BLOCKLIST", "PROHIBITED_CONTENT", "SPII", "IMAGE_SAFETY")
+        blocked = blocked or bool(getattr(response.prompt_feedback, "block_reason", None))
+        return response.text or "", response.model_version, reason, blocked
 
     def remove_substring(self, output, substring):
+        return output.replace(substring, "")
 
-        if substring in output:
-            return output.replace(substring, "")
-        else:
-            return output
-
-    def generate(self, prompt, messages=None, _retry_count=0):
-        max_retries = 5
-        new_messages = None
-
-        if not messages:
-            messages = [{"role": "user", "content": prompt}]
+    def generate(self, prompt, messages=None, _retry_count=0, response_format=None):
+        import signal
+        import threading
+        timer = None
+        if hasattr(signal, "setitimer") and threading.current_thread() is threading.main_thread():
+            timer = signal.setitimer(signal.ITIMER_REAL, 0)
         try:
-            response = self.client.chat.completions.create(
-                model=self.model_name,
-                messages=messages,
-                temperature=self.temperature,
-            )
-        except Exception as e:
-            if _retry_count >= max_retries:
-                raise RuntimeError(f"API call failed after {max_retries} retries. Last error: {e}")
-            wait_time = min(60 * (2 ** _retry_count), 300)
-            print(f"Error: {e}, retrying in {wait_time}s (attempt {_retry_count + 1}/{max_retries})")
-            time.sleep(wait_time)
-            return self.generate(prompt, messages, _retry_count=_retry_count + 1)
-        new_messages = messages
-        result = response.choices[0].message.content.lstrip("\n").rstrip("\n")
-        result = self.remove_substring(result, "```python")
-        result = self.remove_substring(result, "```json")
-        result = self.remove_substring(result, "```")
-        new_messages.append(
-            {
-                "role": response.choices[0].message.role,
-                "content": result,
-            }
-        )
-        return result, new_messages
+            return self._generate_messages(prompt, messages, _retry_count, response_format)
+        finally:
+            if timer is not None and timer[0] > 0:
+                signal.setitimer(signal.ITIMER_REAL, *timer)
 
-if __name__ == "__main__":
-    generator = Generator(model_name="gemini-3.1-flash-lite-preview")
-    result, messages = generator.generate("Tell me a joke")
-    print(result)
-    print(messages)
-    
+    def _generate_messages(self, prompt, messages, retry_count, response_format):
+        import copy
+        import random
+        from openai import APIConnectionError
+        from httpx import TransportError
+        if type(retry_count) is not int or not 0 <= retry_count < 6:
+            raise ValueError("_retry_count must be an integer between 0 and 5")
+        messages = copy.deepcopy(messages) if messages else [{"role": "user", "content": prompt}]
+        budget = self.max_output_tokens
+        for attempt in range(retry_count, 6):
+            try:
+                if self.vertex:
+                    output, actual_model, reason, blocked = self._vertex_generate(messages, budget, response_format)
+                else:
+                    options = {"response_format": response_format} if response_format is not None else {}
+                    if budget is not None:
+                        options["max_tokens"] = budget
+                    if self.thinking_level is not None:
+                        options["extra_body"] = {"reasoning_effort": self.thinking_level.lower()}
+                    response = self.client.chat.completions.create(
+                        model=self.model_name, messages=messages, temperature=self.temperature, **options)
+                    choice = response.choices[0] if response.choices else None
+                    output = choice.message.content or "" if choice else ""
+                    actual_model = response.model
+                    reason = choice.finish_reason if choice else None
+                    blocked = reason == "content_filter" or bool(getattr(choice.message, "refusal", None) if choice else None)
+            except Exception as exc:
+                status = getattr(exc, "status_code", None) or getattr(exc, "code", None)
+                quota = any(term in str(exc).lower() for term in ("insufficient_quota", "credit_balance_exhausted"))
+                transient = status in (408, 429, 500, 502, 503, 504) or isinstance(exc, (APIConnectionError, TransportError, TimeoutError, ConnectionError))
+                if quota or not transient or attempt + 1 >= (6 if status == 429 else 4):
+                    raise ModelRequestError(str(exc), quota_exhausted=quota) from exc
+                failure = f"{type(exc).__name__}, status={status}"
+            else:
+                versioned_alias = actual_model and actual_model.startswith(self.model_name + "-") and actual_model[len(self.model_name) + 1:len(self.model_name) + 2].isdigit()
+                if not self.custom_endpoint and actual_model and not (actual_model == self.model_name or versioned_alias):
+                    raise ModelRequestError(f"Model mismatch: requested {self.model_name}, received {actual_model}")
+                if blocked:
+                    raise ModelRequestError(f"Model response blocked: {reason}")
+                if reason in ("MAX_TOKENS", "length"):
+                    limit = 8192 if self.model_name.startswith("gemini-2.0-") else 65536
+                    if budget is None or budget >= limit:
+                        raise ModelRequestError("Model response truncated at its output limit")
+                    budget = min(budget * 2, limit)
+                    failure = f"Model response truncated; max_output_tokens={budget}"
+                elif output.strip():
+                    output = output.strip().replace("```python", "").replace("```json", "").replace("```", "")
+                    if not output.strip():
+                        failure = "Model returned no content after formatting removal"
+                    else:
+                        messages.append({"role": "assistant", "content": output})
+                        return output, messages
+                else:
+                    failure = "Model returned no text"
+                if attempt + 1 >= 4:
+                    raise ModelRequestError(failure)
+            delay = min(10 * 2 ** attempt, 90) + random.uniform(0, 5)
+            print(f"API retry {attempt + 1}: {failure}, wait={delay:.1f}s")
+            time.sleep(delay)
+
 
 def docstring_from_json(json_file):
     with open(json_file, "r") as file:
@@ -271,7 +366,7 @@ def set_devices():
 
 def timeout_handler(signum, frame):
     raise TimeoutException(
-        "The script took too long to run. There is likely a Recursion Error. Ensure that you are not calling a method with infinite recursion."
+        "Local program execution exceeded its time budget. Inspect the traceback for slow loops or expensive computation."
     )
 
 
